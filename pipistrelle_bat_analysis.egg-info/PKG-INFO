@@ -1,0 +1,26 @@
+Metadata-Version: 2.4
+Name: pipistrelle_bat_analysis
+Version: 0.1.0
+Summary: Audio Dataset and Preprocessing Pipeline for Pipistrelle Bat Recordings
+Author: Anastasia Deych
+Requires-Python: >=3.8
+Requires-Dist: numpy
+Requires-Dist: pandas
+Requires-Dist: scikit-learn
+Requires-Dist: matplotlib
+Requires-Dist: seaborn
+Requires-Dist: soundfile
+Requires-Dist: tqdm
+Requires-Dist: torch
+Requires-Dist: torchaudio
+Requires-Dist: iterative-stratification
+Provides-Extra: perch
+Requires-Dist: tensorflow; extra == "perch"
+Requires-Dist: tensorflow-hub; extra == "perch"
+Provides-Extra: beats
+Requires-Dist: librosa; extra == "beats"
+Dynamic: author
+Dynamic: provides-extra
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary

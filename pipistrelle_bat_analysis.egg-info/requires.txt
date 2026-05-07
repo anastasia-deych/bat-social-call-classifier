@@ -1,0 +1,17 @@
+numpy
+pandas
+scikit-learn
+matplotlib
+seaborn
+soundfile
+tqdm
+torch
+torchaudio
+iterative-stratification
+
+[beats]
+librosa
+
+[perch]
+tensorflow
+tensorflow-hub

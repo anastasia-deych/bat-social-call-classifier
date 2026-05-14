@@ -51,8 +51,8 @@ def build_feature_bank(batdata, encoder, model_name, device='cpu'):
         feature_list.append(feats.numpy())
         label_list.append(labels.numpy())
             
-    # Concatenate everything into two giant matrices
-    return np.concatenate(feature_list, axis=0), np.concatenate(label_list, axis=0)
+    # Returns one list of features and a numpy array of labels
+    return feature_list, np.array(label_list)
 
 
 def extract_encoder(model_name, device='cpu'):
@@ -71,31 +71,36 @@ def extract_encoder(model_name, device='cpu'):
         return perch_model.signatures['serving_default'] 
     
 
-def pool_features(features, windows : bool = False, method : str ='mean',encoder : str = 'perch2'):
-    features = np.array(features) # Ensure it's a NumPy array for pooling operations
+def pool_features(features, windows : bool = False,window_pooled : bool = False, method : str ='mean',encoder : str = 'perch2'):
 
     if windows :
         if method == 'mean':
-            return features.mean(axis=1)
+            pooled_list = [np.mean(f, axis=0) for f in features]
+            return np.stack(pooled_list)
         elif method == 'max':
-            return features.max(axis=1)
+            pooled_list = [np.max(f, axis=0) for f in features]
+            return np.stack(pooled_list)
         else:
             raise ValueError(f"Unsupported pooling method: {method}")
     else :
         if encoder == 'effnetb0' :
             ax = (2,3)
-            if features.ndim > 4 : ax = (3,4)
         elif encoder == 'NLM_BEATs' :
             ax = 1
-            if features.ndim > 3 : ax = 2
         elif encoder == 'perch2' :
             ax = (1,2)
-            if features.ndim > 4 : ax = (2,3)
 
-        
-        if method == 'mean':
-            return features.mean(axis=ax)
-        elif method == 'max':
-            return features.max(axis=ax)
-        else:
-            raise ValueError(f"Unsupported pooling method: {method}")
+        if window_pooled :
+            if method == 'mean':
+                return features.mean(axis=ax)
+            elif method == 'max':
+                return features.max(axis=ax)
+            else:
+                raise ValueError(f"Unsupported pooling method: {method}")
+        else :
+            if method == 'mean':
+                return [f.mean(axis=ax) for f in features]
+            elif method == 'max':
+                return [f.max(axis=ax) for f in features]
+            else:
+                raise ValueError(f"Unsupported pooling method: {method}")

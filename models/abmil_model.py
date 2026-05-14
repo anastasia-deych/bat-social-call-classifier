@@ -42,7 +42,7 @@ class MILDataset(Dataset):
         Parameters
         ----------
         X_bags : list of (n_windows, n_features) arrays
-            One bag (recording) per element
+            One bag (recording) per element. IMPORTANT: bags can have different lengths!
         y_labels : (n_bags, n_labels) array
             Multi-label targets
         scaler : StandardScaler or None
@@ -72,6 +72,31 @@ class MILDataset(Dataset):
     
     def __getitem__(self, idx):
         return self.X_bags_scaled[idx], self.y_labels[idx]
+
+
+def collate_mil(batch):
+    """
+    Custom collate function for MIL batches with variable-length bags.
+    
+    PyTorch's default collate tries to stack tensors, which fails when
+    bags have different numbers of instances.
+    
+    Parameters
+    ----------
+    batch : list of tuples
+        Each tuple is (bag_tensor, label_tensor) where bag_tensor
+        can have different length
+    
+    Returns
+    -------
+    bags : list of tensors
+        Each element is a (n_instances_i, n_features) tensor
+    labels : (batch_size, n_labels) tensor
+        Stacked labels
+    """
+    bags = [item[0] for item in batch]
+    labels = torch.stack([item[1] for item in batch])
+    return bags, labels
 
 
 # ============================================================================
@@ -183,7 +208,7 @@ class ABMIL(nn.Module):
                 M = torch.sum(A * H, dim=0, keepdim=True)  # (1, hidden_dim)
                 
                 # Classification
-                logit = self.classifier(M)[:, label_idx]  # scalar
+                logit = self.classifier(M)[0, label_idx]  
                 logits_list.append(logit)
                 attention_weights_list.append(A_squeezed)
             
@@ -269,11 +294,13 @@ def train_abmil(
     
     # Create datasets
     train_dataset = MILDataset(X_bags_train, y_train, scaler=scaler, fit_scaler=True)
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, 
+                              collate_fn=collate_mil)
     
     if X_bags_val is not None:
         val_dataset = MILDataset(X_bags_val, y_val, scaler=scaler, fit_scaler=False)
-        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False,
+                               collate_fn=collate_mil)
     else:
         val_loader = None
     
@@ -315,8 +342,8 @@ def train_abmil(
         train_loss = 0.0
         
         for X_batch, y_batch in train_loader:
-            # Note: In MIL, batch size = number of bags
-            # Each bag has variable number of instances
+            # X_batch is now a list of tensors (variable length bags)
+            # y_batch is a (batch_size, n_labels) tensor
             
             optimizer.zero_grad()
             
@@ -347,6 +374,9 @@ def train_abmil(
             
             with torch.no_grad():
                 for X_batch, y_batch in val_loader:
+                    # X_batch is a list of tensors (variable length)
+                    # y_batch is (batch_size, n_labels)
+                    
                     batch_loss = 0.0
                     
                     for bag_idx in range(len(X_batch)):

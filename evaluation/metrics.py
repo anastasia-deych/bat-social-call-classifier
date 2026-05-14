@@ -273,7 +273,7 @@ def plot_comprehensive_results(all_results, labels, title="Model Evaluation"):
         ax3.bar(x_err + offset, means, width, yerr=yerr, 
                 color=colors[i], capsize=5, alpha=0.8, edgecolor='white')
 
-    ax3.set_title("Calibration Error (Lower is Better)", fontsize=14, fontweight='bold')
+    ax3.set_title("Calibration Error", fontsize=14, fontweight='bold')
     ax3.set_xticks(x_err)
     ax3.set_xticklabels(['Brier Score', 'Log-Loss'], fontsize=12)
     ax3.set_ylabel("Error Value")
@@ -282,6 +282,116 @@ def plot_comprehensive_results(all_results, labels, title="Model Evaluation"):
     plt.tight_layout()
     plt.show()
 
+
+
+def plot_comprehensive_results2(all_results, labels, title="Model Evaluation"):
+    sns.set_context("paper")
+    sns.set_style("whitegrid")
+    
+    fig, axes = plt.subplots(3, 1, figsize=(14, 20)) # Increased size slightly
+    colors = plt.cm.viridis(np.linspace(0, 0.8, len(all_results)))
+    width = 0.8 / len(all_results)
+    
+    handles, legend_labels = [], []
+
+    # --- HELPER: Manual Zoom Function ---
+    def apply_manual_zoom(ax, data_points, padding=0.1):
+        """Forces the Y-axis to zoom in on the data range."""
+        if not data_points: return
+        d_min, d_max = min(data_points), max(data_points)
+        diff = d_max - d_min
+        # If there's no difference (e.g. all 1.0), use a default range
+        if diff == 0:
+            ax.set_ylim(d_min - 0.05, d_min + 0.05)
+        else:
+            ax.set_ylim(d_min - (diff * padding), d_max + (diff * padding))
+
+    # --- Subplot 1: Global Metrics ---
+    ax1 = axes[0]
+    global_keys = ['Macro-AUC', 'cmAP']
+    x_global = np.arange(len(global_keys))
+    points_for_zoom1 = []
+
+    for i, (model_name, stats) in enumerate(all_results.items()):
+        means = [stats[k][0] for k in global_keys]
+        low_err = [stats[k][0] - stats[k][2] for k in global_keys]
+        high_err = [stats[k][1] - stats[k][0] for k in global_keys]
+        
+        # Track every low/high point for scaling
+        points_for_zoom1.extend([m - l for m, l in zip(means, low_err)])
+        points_for_zoom1.extend([m + h for m, h in zip(means, high_err)])
+        
+        offset = i * width - (width * len(all_results)) / 2 + width / 2
+        bar = ax1.bar(x_global + offset, means, width, yerr=[low_err, high_err], 
+                      color=colors[i], capsize=4, alpha=0.8, edgecolor='white')
+        
+        if model_name not in legend_labels:
+            handles.append(bar)
+            legend_labels.append(model_name)
+
+    ax1.set_title("Global Performance: Macro-AUC vs cmAP", fontsize=15, fontweight='bold')
+    ax1.set_xticks(x_global)
+    ax1.set_xticklabels(['Macro-AUC', 'cmAP (mAP)'], fontsize=12)
+    ax1.set_ylabel("Score")
+    apply_manual_zoom(ax1, points_for_zoom1)
+
+    # --- Subplot 2: Per-Class Average Precision ---
+    ax2 = axes[1]
+    x_labels = np.arange(len(labels))
+    points_for_zoom2 = []
+    
+    for i, (model_name, stats) in enumerate(all_results.items()):
+        ap_data = stats['AP per label']
+        means = [ap_data[0][l] for l in labels]
+        low_err = [ap_data[0][l] - ap_data[2][l] for l in labels]
+        high_err = [ap_data[1][l] - ap_data[0][l] for l in labels]
+        
+        points_for_zoom2.extend([m - l for m, l in zip(means, low_err)])
+        points_for_zoom2.extend([m + h for m, h in zip(means, high_err)])
+        
+        offset = i * width - (width * len(all_results)) / 2 + width / 2
+        ax2.bar(x_labels + offset, means, width, yerr=[low_err, high_err], 
+                color=colors[i], capsize=3, alpha=0.8, edgecolor='white')
+
+    ax2.set_title("Per-Class Average Precision", fontsize=15, fontweight='bold')
+    ax2.set_xticks(x_labels)
+    ax2.set_xticklabels(labels, rotation=35, ha='right')
+    ax2.set_ylabel("AP Score")
+    apply_manual_zoom(ax2, points_for_zoom2)
+
+    # --- Subplot 3: Error Metrics ---
+    ax3 = axes[2]
+    error_metrics = ['Brier (macro) mean', 'Log-Loss (macro) mean']
+    x_err = np.arange(len(error_metrics))
+    points_for_zoom3 = []
+    
+    for i, (model_name, stats) in enumerate(all_results.items()):
+        means = [stats[m][0] for m in error_metrics]
+        low_err = [stats[m][0] - stats[m][2] for m in error_metrics]
+        high_err = [stats[m][1] - stats[m][0] for m in error_metrics]
+        
+        points_for_zoom3.extend([m - l for m, l in zip(means, low_err)])
+        points_for_zoom3.extend([m + h for m, h in zip(means, high_err)])
+        
+        offset = i * width - (width * len(all_results)) / 2 + width / 2
+        ax3.bar(x_err + offset, means, width, yerr=[low_err, high_err], 
+                color=colors[i], capsize=5, alpha=0.8, edgecolor='white')
+
+    ax3.set_title("Calibration Error (Lower is Better)", fontsize=15, fontweight='bold')
+    ax3.set_xticks(x_err)
+    ax3.set_xticklabels(['Brier Score', 'Log-Loss'], fontsize=12)
+    ax3.set_ylabel("Error Value")
+    apply_manual_zoom(ax3, points_for_zoom3)
+
+    # --- Global Legend and Layout ---
+    plt.suptitle(title, fontsize=22, y=1.02)
+    
+    # Legend at bottom with multiple rows if needed
+    fig.legend(handles, legend_labels, loc='lower center', ncol=3, 
+               bbox_to_anchor=(0.5, -0.05), fontsize=11, frameon=True)
+
+    plt.tight_layout(rect=[0, 0.02, 1, 0.98])
+    plt.show()
 
 
 """Implementation

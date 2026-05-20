@@ -13,20 +13,25 @@ are most important for predicting each label.
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from sklearn.pipeline import Pipeline
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import GridSearchCV, train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import (
     average_precision_score,
+    make_scorer,
     roc_auc_score,
     hamming_loss,
     accuracy_score,
     f1_score,
 )
 import warnings
+from iterstrat.ml_stratifiers import MultilabelStratifiedKFold
+#from transformers import PipelineedKFold
+from sklearn.base import BaseEstimator, ClassifierMixin
 warnings.filterwarnings('ignore')
 
 
@@ -321,7 +326,7 @@ def train_abmil(
     criterion = nn.BCELoss()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=5, verbose=verbose
+        optimizer, mode='min', factor=0.5, patience=5 #, verbose=verbose
     )
     
     # Training history
@@ -472,52 +477,205 @@ def predict_abmil(model, X_bags, scaler, device='cpu'):
     return np.array(predictions), attention_dict
 
 
-def evaluate_abmil(y_true, y_pred, y_pred_binary=None, threshold=0.5):
-    """
-    Evaluate ABMIL predictions.
+#Sklearn abMIL wrapper
+
+class ABMILSklearnWrapper(BaseEstimator, ClassifierMixin):
+    """Scikit-Learn wrapper for the custom ABMIL architecture."""
     
-    Parameters
-    ----------
-    y_true : (n_bags, n_labels) array
-    y_pred : (n_bags, n_labels) array
-        Probability predictions
-    y_pred_binary : array or None
-    threshold : float
+    def __init__(self, hidden_dim=256, attention_dim=128, dropout=0.2, 
+                 learning_rate=1e-3, weight_decay=1e-5, batch_size=4, 
+                 n_epochs=50, n_labels=5, device='cpu'):
+        # Keep every parameter explicitly in __init__ for Scikit-Learn cloning mechanisms
+        self.hidden_dim = hidden_dim
+        self.attention_dim = attention_dim
+        self.dropout = dropout
+        self.learning_rate = learning_rate
+        self.weight_decay = weight_decay
+        self.batch_size = batch_size
+        self.n_epochs = n_epochs
+        self.n_labels = n_labels
+        self.device = device
+        
+    def fit(self, X, y):
+        """
+        X : list of arrays (the bags)
+        y : ndarray of shape (n_bags, n_labels)
+        """
+        # Call your native training script using the instance's tuned parameters
+        self.model_, self.history_, self.scaler_ = train_abmil(
+            X_bags_train=X,
+            y_train=y,
+            X_bags_val=None,
+            y_val=None,
+            n_labels=self.n_labels,
+            n_epochs=self.n_epochs,
+            batch_size=self.batch_size,
+            learning_rate=self.learning_rate,
+            weight_decay=self.weight_decay,
+            hidden_dim=self.hidden_dim,
+            attention_dim=self.attention_dim,
+            dropout=self.dropout,
+            label_specific_attention=True,
+            device=self.device,
+            verbose=False
+        )
+        # Standard scikit-learn convention requires returning self
+        return self
+        
+    def predict_proba(self, X):
+        """X : list of arrays (the test bags)"""
+        # Delegate directly to your custom prediction module
+        preds, _ = predict_abmil(self.model_, X, self.scaler_, device=self.device)
+        return preds
+
+    def predict(self, X):
+        # Multi-label classification thresholding shortcut
+        return (self.predict_proba(X) > 0.5).astype(int)
     
-    Returns
-    -------
-    metrics : dict
-    """
-    if y_pred_binary is None:
-        y_pred_binary = (y_pred > threshold).astype(int)
-    
-    metrics = {
-        "cmAP": average_precision_score(y_true, y_pred, average='macro'),
-        "AUC-ROC (macro)": roc_auc_score(y_true, y_pred, average='macro'),
-        "AUC-ROC (micro)": roc_auc_score(y_true, y_pred, average='micro'),
-        "Hamming Loss": hamming_loss(y_true, y_pred_binary),
-        "Subset Accuracy": accuracy_score(y_true, y_pred_binary),
-        "F1 (macro)": f1_score(y_true, y_pred_binary, average='macro', zero_division=0),
-    }
-    
-    # Per-label metrics
-    metrics["AP per label"] = {}
-    metrics["AUC per label"] = {}
-    
-    for i in range(y_true.shape[1]):
-        metrics["AP per label"][f"Label {i}"] = average_precision_score(y_true[:, i], y_pred[:, i])
-        metrics["AUC per label"][f"Label {i}"] = roc_auc_score(y_true[:, i], y_pred[:, i])
-    
-    return metrics
+    # Define classes property to prevent scikit-learn multi-label metadata errors
+    @property
+    def classes_(self):
+        return [np.array([0, 1]) for _ in range(self.n_labels)]
 
 
 # ============================================================================
-# USAGE EXAMPLE
+# USAGE 
 # ============================================================================
-if __name__ == "__main__":
-    print("ABMIL module loaded successfully.")
-    print("\nKey differences from mean-pooling:")
-    print("  • Uses un-pooled window embeddings (one per window)")
-    print("  • Learns importance weights via attention mechanism")
-    print("  • Can identify which windows are diagnostic for each label")
-    print("  • Often achieves better performance on MIL-suitable problems")
+
+def abmil_classifier_cv(X_bags,y,n_splits=5,random_state=42,n_labels=5): 
+    label_names = ['Type A', 'Type B', 'Type C', 'Type D', 'Echo']
+    y_np = np.array(y)
+    kf = MultilabelStratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+
+    # 2. Setup Storage for metrics function
+    y_true_all = []  # List of 5 arrays
+    y_pred_all = []  # List of 5 arrays
+
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    print(f"Starting Cross-Validation on Device: {device}")
+
+    # 3. Cross-Validation Loop
+    for fold, (train_idx, test_idx) in enumerate(kf.split(X_bags, y_np)):
+        print(f"\n{'='*30}")
+        print(f" Processing Fold {fold + 1} / {n_splits} ")
+        print(f"{'='*30}")
+
+        # Split bags and labels for this fold
+        X_bags_train = [X_bags[i] for i in train_idx]
+        X_bags_test = [X_bags[i] for i in test_idx]
+        y_train, y_test = y_np[train_idx], y_np[test_idx]
+
+        # Train ABMIL (The function creates a fresh model instance internally)
+        model, history, scaler = train_abmil(
+            X_bags_train,
+            y_train,
+            X_bags_val=None, 
+            y_val=None,
+            n_labels=n_labels,
+            n_epochs=100,
+            batch_size=4,
+            learning_rate=1e-3,
+            weight_decay=1e-5,
+            hidden_dim=256,
+            attention_dim=128,
+            dropout=0.2,
+            label_specific_attention=True,
+            device=device,
+            verbose=False # Set to False to keep console clean during CV
+        )
+
+        # Predict on test set
+        print(f"Evaluating Fold {fold + 1}...")
+        y_pred_test, _ = predict_abmil(model, X_bags_test, scaler, device=device)
+
+        # Store results
+        y_true_all.append(y_test)
+        y_pred_all.append(y_pred_test)
+
+    return y_true_all, y_pred_all
+
+def abmil_classifier_tuned(X_bags, y, n_split_out=5,n_split_in=5, num_trials=5,random_state=42):
+    # 1. Initialize the split
+    y = np.array(y) 
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    scorer = make_scorer(average_precision_score, average='macro', response_method='predict_proba')
+    all_results = []
+
+    for i in range(num_trials) :
+        print(f"Starting Trial {i+1}/{num_trials} with random_state={random_state + i}...")
+        model_params = {
+            'ABMIL': {
+                'model': ABMILSklearnWrapper(n_labels=y.shape[1],n_epochs=50, batch_size=4, device=device), #note : standard scaler already implemented
+                'params': {
+                    'hidden_dim': [128, 256],
+                    'attention_dim': [64, 128],
+                    'learning_rate': [1e-3, 5e-4]
+                }
+            }   
+        }
+        #Cross validation techniques for inner and outer loop
+        inner_cv = MultilabelStratifiedKFold(n_splits=n_split_in, shuffle=True, random_state=random_state + i)
+        outer_cv = MultilabelStratifiedKFold(n_splits=n_split_out, shuffle=True, random_state=random_state + i)
+
+        #Nester CV with parameter optimisation for each model
+        for model_name, mp in model_params.items():
+            print(f"  Tuning and evaluating model: {model_name}")
+            all_y_true = []
+            all_y_pred_proba = []
+            all_test_indices = []
+
+            outer_scores = []
+
+            for fold ,(train_idx, test_idx) in enumerate(outer_cv.split(X_bags, y)):
+                print(f"    Evaluating fold {fold+1}/{n_split_out}")
+                X_bags_train = [X_bags[i] for i in train_idx]
+                X_bags_test = [X_bags[i] for i in test_idx]
+                y_train, y_test = y[train_idx], y[test_idx]
+
+
+                clf = GridSearchCV(estimator=mp['model'],param_grid=mp['params'],cv=inner_cv,
+                                   scoring=scorer,refit=True,n_jobs=1)
+
+                # fit on outer-train
+                clf.fit(X_bags_train, y_train)
+
+                # predict on outer-test
+                y_pred_proba = clf.predict_proba(X_bags_test)
+
+                #checking for y_pred_proba format and converting to [Samples, Labels] if needed
+                if isinstance(y_pred_proba, list):
+                    # For a list of arrays, extract the positive probability (column index 1) for each class
+                    y_pred_proba = np.column_stack([prob[:, 1] for prob in y_pred_proba])
+                elif isinstance(y_pred_proba, np.ndarray) and y_pred_proba.ndim == 3:
+                    # Alternative 3D representation sometimes returned by multi-output setups
+                    y_pred_proba = y_pred_proba[:, :, 1].T
+
+                # fold score
+                fold_score = average_precision_score(y_test,y_pred_proba,average='macro')
+                outer_scores.append(fold_score)
+
+                # ---------------------------------
+                # STORE OOF PREDICTIONS
+                # ---------------------------------
+                all_y_true.append(y_test)
+                all_y_pred_proba.append(y_pred_proba)
+                all_test_indices.append(test_idx)
+            
+            #Concatenate fold results to get out of fold predictions
+            all_y_true = np.concatenate(all_y_true, axis=0)
+            all_y_pred_proba = np.concatenate(all_y_pred_proba, axis=0)
+            all_test_indices = np.concatenate(all_test_indices, axis=0)
+            all_results.append({
+                'trial': i,
+                'model': model_name,
+
+                'mean_AP': np.mean(outer_scores),
+                'std_AP': np.std(outer_scores, ddof=1),
+
+                'oof_y_true': all_y_true,
+                'oof_y_pred_proba': all_y_pred_proba,
+                'oof_indices': all_test_indices
+            })
+    
+    # Return as numpy arrays for easier use in your compute_cv_stats
+    return all_results

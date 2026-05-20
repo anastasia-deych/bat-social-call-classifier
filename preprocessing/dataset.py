@@ -178,11 +178,12 @@ class AugmentationPipeline:
         ir_per_label = max_count / (counts + 1e-9)
         return ir_per_label
         
-    def iterative_oversample(self, X, y, target_percentage=1.0):
+    def iterative_oversample(self, X, y, target_percentage=1.0,random_state = 42):
         """
         Randomly duplicates samples containing minority labels 
         until the distribution balances out.
         """
+        rng = np.random.default_rng(random_state)
         # Convert to numpy for indexing if they aren't already
         X_resampled = list(X)
         y_resampled = list(y)
@@ -217,7 +218,7 @@ class AugmentationPipeline:
             if len(possible_indices) == 0:
                 continue # Should not happen if label exists
 
-            idx_to_clone = np.random.choice(possible_indices)
+            idx_to_clone = rng.choice(possible_indices)
 
             # Duplicate the sample
             y_resampled.append(y[idx_to_clone])

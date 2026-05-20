@@ -1,33 +1,64 @@
 
 import numpy as np
-from dataset import AugmentationPipeline
+from preprocessing.dataset import AugmentationPipeline
 from iterstrat.ml_stratifiers import MultilabelStratifiedKFold
 
-def balanced_test_data_train(X,y, test_size=0.2, random_state=42):
-    #First, split the data using an iterative stratifier
-    #Split the data into balanced training and test set
-    kf = MultilabelStratifiedKFold(n_splits=1/test_size, shuffle=True, random_state=random_state) 
-    train_idx, test_idx = next(kf.split(X, y))
-
-    #Check the smallest class in test set
-    y_test = y[test_idx]
-    classes = y.shape[1]
-    counts = np.sum(y_test, axis=0)
-    min_class = np.argmin(counts)
-    min_count = counts[min_class]
-
-    #randomly remove samples from test set and add to training set until all classes have maximum of min_count samples
-    while np.any(counts > min_count+1):
-        for i in range(classes):
-            if counts[i] > min_count+1:
-                #Find indices of samples in test set that belong to class i
-                class_indices = np.where(y_test[:, i] == 1)[0]
-                #Randomly select one index to remove
-                remove_idx = np.random.choice(class_indices)
-                #Remove the sample from test set and add to training set
-                train_idx = np.append(train_idx, test_idx[remove_idx])
-                test_idx = np.delete(test_idx, remove_idx)
-                y_test = y[test_idx]
-                counts = np.sum(y_test, axis=0)
+def get_balanced_split_indices(X, y, folds = 5, random_state=42):
+    np.random.seed(random_state)
     
-    return train_idx, test_idx
+    # 1. First, split the data proportionally using iterative stratification
+    n_splits = folds
+    kf = MultilabelStratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+    strat_train_idx, strat_test_idx = next(kf.split(X, y))
+    
+    # 2. Determine our target uniform count based on the stratified test set
+    y_strat_test = y[strat_test_idx]
+    original_counts = np.sum(y_strat_test, axis=0)
+    
+    # Set the uniform target to the average or median class size to keep it healthy
+    # (Using the absolute minimum creates too small of a bottleneck)
+    target_uniform_count = int(np.median(original_counts))
+    
+    print(f"Original stratified test counts per class: {original_counts}")
+    print(f"Target uniform capacity per class: {target_uniform_count}")
+    
+    # 3. Calculate label "rarity" weights (inverse frequencies)
+    # Rare labels get higher priority so they aren't accidentally discarded
+    class_frequencies = np.sum(y, axis=0)
+    label_weights = 1.0 / (class_frequencies + 1e-5)
+    
+    # Assign a priority score to each sample in the test set based on its rarest label
+    sample_priorities = np.dot(y_strat_test, label_weights)
+    
+    # Sort test indices: rarest samples first
+    sorted_test_meta_indices = np.argsort(sample_priorities)[::-1]
+    sorted_actual_test_idxs = strat_test_idx[sorted_test_meta_indices]
+    
+    # 4. Filter test set with a capacity ceiling
+    final_test_idx = []
+    final_train_idx = list(strat_train_idx)
+    
+    current_test_counts = np.zeros(y.shape[1])
+    
+    for idx in sorted_actual_test_idxs:
+        sample_labels = y[idx]
+        active_classes = np.where(sample_labels == 1)[0]
+        
+        # Check if adding this sample would violate the capacity limit for ALL its active classes
+        # If it fits in at least one under-represented class, we keep it!
+        can_fit = any(current_test_counts[c] < target_uniform_count for c in active_classes)
+        
+        if can_fit or len(active_classes) == 0: # Always keep negative/empty samples if any
+            final_test_idx.append(idx)
+            current_test_counts += sample_labels
+        else:
+            # If it exceeds capacity, safely move it back to the training partition
+            final_train_idx.append(idx)
+            
+    final_train_idx = np.array(final_train_idx)
+    final_test_idx = np.array(final_test_idx)
+    
+    print(f"Final balanced test counts per class: {np.sum(y[final_test_idx], axis=0)}")
+    print(f"Final split size: Train={len(final_train_idx)}, Test={len(final_test_idx)}")
+    
+    return final_train_idx, final_test_idx

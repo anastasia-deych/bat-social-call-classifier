@@ -178,8 +178,6 @@ def linear_probe_online(csv_data : str, n_split=5, random_state=42,balance : boo
     return y_true_all, y_proba_all
 
 
-
-
 def linear_probe(X, y, n_split=5, random_state=42,balance : bool = False,oversample:bool = False):
     # 1. Initialize the split
     kf = MultilabelStratifiedKFold(n_splits=n_split, shuffle=True, random_state=random_state)
@@ -255,9 +253,11 @@ def linear_probe_tuned(X, y, n_split_out=5,n_split_in=5, num_trials=5,random_sta
                             random_state=random_state,
                             class_weight='balanced' if balance else None)),
                 'params' : {
-                    'model__estimator__C':[1,10,20],
-                    'model__estimator__kernel':['rbf','linear'],
-                    'model__estimator__gamma': ['scale', 'auto', 0.01, 0.1]
+                    #'model__estimator__C':[1,10,20],
+                    #'model__estimator__kernel':['rbf','linear'],
+                    #'model__estimator__gamma': ['scale', 'auto', 0.01, 0.1]
+                    'model__estimator__C':[10,20],
+                    'model__estimator__kernel':['linear'],
                 }
             }, 
             'Random Forest': {
@@ -286,7 +286,11 @@ def linear_probe_tuned(X, y, n_split_out=5,n_split_in=5, num_trials=5,random_sta
                     'model__epochs':[50],
                     'model__dropout':[0.2, 0.5]
                 }
-            }  
+            },
+            'Prevalence guesser' : {
+                'model' : MultilabelPrevalenceBaseline(type='stochastic'),
+                'params' : {}
+            }
         }
     all_results = []
 
@@ -324,6 +328,14 @@ def linear_probe_tuned(X, y, n_split_out=5,n_split_in=5, num_trials=5,random_sta
                 # predict on outer-test
                 y_pred_proba = clf.predict_proba(X_test)
 
+                #checking for y_pred_proba format and converting to [Samples, Labels] if needed
+                if isinstance(y_pred_proba, list):
+                    # For a list of arrays, extract the positive probability (column index 1) for each class
+                    y_pred_proba = np.column_stack([prob[:, 1] for prob in y_pred_proba])
+                elif isinstance(y_pred_proba, np.ndarray) and y_pred_proba.ndim == 3:
+                    # Alternative 3D representation sometimes returned by multi-output setups
+                    y_pred_proba = y_pred_proba[:, :, 1].T
+
                 # fold score
                 fold_score = average_precision_score(y_test,y_pred_proba,average='macro')
                 outer_scores.append(fold_score)
@@ -335,7 +347,7 @@ def linear_probe_tuned(X, y, n_split_out=5,n_split_in=5, num_trials=5,random_sta
                 all_y_pred_proba.append(y_pred_proba)
                 all_test_indices.append(test_idx)
             
-            #Concatenate fold results
+            #Concatenate fold results to get out of fold predictions
             all_y_true = np.concatenate(all_y_true, axis=0)
             all_y_pred_proba = np.concatenate(all_y_pred_proba, axis=0)
             all_test_indices = np.concatenate(all_test_indices, axis=0)
@@ -366,6 +378,8 @@ class BalancedMLP(BaseEstimator, ClassifierMixin):
         dropout=0.2,
         balanced = False, 
         focal_loss : bool = False,
+        focal_gamma : float = 2.0,
+        focal_alpha : float = 0.25,
         batch_norm : bool = False,
         batch_size=32  # Added to prevent full-batch training issues
     ) -> None:
@@ -378,6 +392,8 @@ class BalancedMLP(BaseEstimator, ClassifierMixin):
         self.classes_ = None
         self.balanced : bool = balanced
         self.focal_loss : bool = focal_loss
+        self.focal_gamma : float = focal_gamma
+        self.focal_alpha : float = focal_alpha
         self.batch_norm : bool = batch_norm
         self.batch_size = batch_size
         self.model_ = None
@@ -409,8 +425,8 @@ class BalancedMLP(BaseEstimator, ClassifierMixin):
         # 2. Setup Training
         self.model_ = self._build_model(y.shape[1])
         if self.focal_loss:
-            criterion = FocalLoss(gamma=2, alpha=0.25, task_type='multi-label')
-        else:
+            criterion = FocalLoss(gamma=self.focal_gamma, alpha=self.focal_alpha, task_type='multi-label')
+        else :
             criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight if self.balanced else None)
         optimizer = optim.Adam(self.model_.parameters(), lr=self.lr)
 

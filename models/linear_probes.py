@@ -1,5 +1,6 @@
 
-from turtle import pd
+#from turtle import pd
+import pandas as pd
 
 import numpy as np
 
@@ -26,6 +27,7 @@ from models.focal_loss import FocalLoss
 
 from preprocessing.dataset import PipistrelleDataset,AugmentationPipeline
 from models.feature_generation import build_feature_bank, extract_encoder,pool_features
+from models.mlsmote import get_minority_instace,MLSMOTE
 
 def linear_probe_oversample(csv_data, n_split=5, random_state=42, balance=False, encoder_name='perch2'):
     df = pd.read_csv(csv_data)
@@ -253,11 +255,11 @@ def linear_probe_tuned(X, y, n_split_out=5,n_split_in=5, num_trials=5,random_sta
                             random_state=random_state,
                             class_weight='balanced' if balance else None)),
                 'params' : {
-                    #'model__estimator__C':[1,10,20],
-                    #'model__estimator__kernel':['rbf','linear'],
-                    #'model__estimator__gamma': ['scale', 'auto', 0.01, 0.1]
-                    'model__estimator__C':[10,20],
-                    'model__estimator__kernel':['linear'],
+                    'model__estimator__C':[1,10,20],
+                    'model__estimator__kernel':['rbf','linear'],
+                    'model__estimator__gamma': ['scale', 'auto', 0.01, 0.1]
+                    #'model__estimator__C':[10,20],
+                    #'model__estimator__kernel':['linear'],
                 }
             }, 
             'Random Forest': {
@@ -320,7 +322,137 @@ def linear_probe_tuned(X, y, n_split_out=5,n_split_in=5, num_trials=5,random_sta
                 ])
 
                 clf = GridSearchCV(estimator=pipeline,param_grid=mp['params'],cv=inner_cv,
-                                   scoring=scorer,refit=True,n_jobs=-1)
+                                   scoring=scorer,refit=True,n_jobs=1 if model_name == 'MLP' else -1)
+
+                # fit on outer-train
+                clf.fit(X_train, y_train)
+
+                # predict on outer-test
+                y_pred_proba = clf.predict_proba(X_test)
+
+                #checking for y_pred_proba format and converting to [Samples, Labels] if needed
+                if isinstance(y_pred_proba, list):
+                    # For a list of arrays, extract the positive probability (column index 1) for each class
+                    y_pred_proba = np.column_stack([prob[:, 1] for prob in y_pred_proba])
+                elif isinstance(y_pred_proba, np.ndarray) and y_pred_proba.ndim == 3:
+                    # Alternative 3D representation sometimes returned by multi-output setups
+                    y_pred_proba = y_pred_proba[:, :, 1].T
+
+                # fold score
+                fold_score = average_precision_score(y_test,y_pred_proba,average='macro')
+                outer_scores.append(fold_score)
+
+                # ---------------------------------
+                # STORE OOF PREDICTIONS
+                # ---------------------------------
+                all_y_true.append(y_test)
+                all_y_pred_proba.append(y_pred_proba)
+                all_test_indices.append(test_idx)
+            
+            #Concatenate fold results to get out of fold predictions
+            all_y_true = np.concatenate(all_y_true, axis=0)
+            all_y_pred_proba = np.concatenate(all_y_pred_proba, axis=0)
+            all_test_indices = np.concatenate(all_test_indices, axis=0)
+            all_results.append({
+                'trial': i,
+                'model': model_name,
+
+                'mean_AP': np.mean(outer_scores),
+                'std_AP': np.std(outer_scores, ddof=1),
+
+                'oof_y_true': all_y_true,
+                'oof_y_pred_proba': all_y_pred_proba,
+                'oof_indices': all_test_indices
+            })
+    
+    # Return as numpy arrays for easier use in your compute_cv_stats
+    return all_results
+
+def linear_probe_tuned_smote(X, y, n_split_out=5,n_split_in=5, num_trials=5,random_state=42,balance : bool = False):
+    # 1. Initialize the split
+    scorer = make_scorer(average_precision_score, average='macro', response_method='predict_proba')
+    model_params = {
+            'SVM': {
+                'model' : OneVsRestClassifier(SVC(
+                            probability=True, 
+                            random_state=random_state,
+                            class_weight='balanced' if balance else None)),
+                'params' : {
+                    'model__estimator__C':[1,10,20],
+                    'model__estimator__kernel':['rbf','linear'],
+                    'model__estimator__gamma': ['scale', 'auto', 0.01, 0.1]
+                    #'model__estimator__C':[10,20],
+                    #'model__estimator__kernel':['linear'],
+                }
+            }, 
+            'Random Forest': {
+                'model' : RandomForestClassifier(
+                            n_estimators=100, 
+                            random_state=random_state,
+                            class_weight='balanced' if balance else None), # RF is natively multi-label
+                'params' : {
+                    'model__n_estimators':[100],
+                    'model__max_depth':[None,10,20]
+                }
+            },
+            'MLP' : {
+                'model' : BalancedMLP(
+                    input_dim=X.shape[1],
+                    hidden_dim=128,
+                    lr=0.001,
+                    epochs=50,
+                    dropout=0.2,
+                    balanced=balance,
+                    batch_norm=False
+                ),
+                'params' : {
+                    'model__lr':[0.001],
+                    'model__hidden_dim':[128],
+                    'model__epochs':[50],
+                    'model__dropout':[0.2, 0.5]
+                }
+            },
+            'Prevalence guesser' : {
+                'model' : MultilabelPrevalenceBaseline(type='stochastic'),
+                'params' : {}
+            }
+        }
+    all_results = []
+
+    for i in range(num_trials) :
+        print(f"Starting Trial {i+1}/{num_trials} with random_state={random_state + i}...")
+        #Cross validation techniques for inner and outer loop
+        inner_cv = MultilabelStratifiedKFold(n_splits=n_split_in, shuffle=True, random_state=i)
+        outer_cv = MultilabelStratifiedKFold(n_splits=n_split_out, shuffle=True, random_state=i)
+
+        #Nester CV with parameter optimisation for each model
+        for model_name, mp in model_params.items():
+            print(f"  Tuning and evaluating model: {model_name}")
+            all_y_true = []
+            all_y_pred_proba = []
+            all_test_indices = []
+
+            outer_scores = []
+
+            for fold ,(train_idx, test_idx) in enumerate(outer_cv.split(X, y)):
+                print(f"    Evaluating fold {fold+1}/{n_split_out}")
+                X_train, X_test = X[train_idx], X[test_idx]
+                y_train, y_test = y[train_idx], y[test_idx]
+
+                X_sub, y_sub = get_minority_instace(pd.DataFrame(X_train), pd.DataFrame(y_train))   #Getting minority instance of that datframe
+                X_res,y_res =MLSMOTE(X_sub, y_sub, 100)
+                X_train = pd.concat([pd.DataFrame(X_train), X_res], axis=0)
+                y_train = pd.concat([pd.DataFrame(y_train), y_res], axis=0)
+                X_train= np.array(X_train)
+                y_train = np.array(y_train)
+
+                pipeline = Pipeline([
+                    ('scaler', StandardScaler()),
+                    ('model', mp['model'])
+                ])
+
+                clf = GridSearchCV(estimator=pipeline,param_grid=mp['params'],cv=inner_cv,
+                                   scoring=scorer,refit=True,n_jobs=1 if model_name == 'MLP' else -1)
 
                 # fit on outer-train
                 clf.fit(X_train, y_train)
@@ -398,6 +530,8 @@ class BalancedMLP(BaseEstimator, ClassifierMixin):
         self.batch_size = batch_size
         self.model_ = None
         self.classes_ = None
+        self.train_loss_history_ = []
+        self.val_loss_history_ = []
 
     def _build_model(self, output_dim):
         return nn.Sequential(
@@ -410,10 +544,26 @@ class BalancedMLP(BaseEstimator, ClassifierMixin):
             nn.Linear(64, output_dim)
         )
 
-    def fit(self, X, y):
+    def fit(self, X, y,X_val = None,y_val = None,**kwargs):
+        # Handle scikit-learn prefix kwargs routing (e.g., model__X_val) safely
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        if X_val is None and 'model__X_val' in kwargs:
+            X_val = kwargs['model__X_val']
+        if y_val is None and 'model__y_val' in kwargs:
+            y_val = kwargs['model__y_val']
+
+        # Reset history tracking on fresh calls
+        self.train_loss_history_ = []
+        self.val_loss_history_ = []
+
         # Convert to Tensors
         X_tensor = torch.FloatTensor(X)
         y_tensor = torch.FloatTensor(y)
+
+        has_validation = X_val is not None and y_val is not None
+        if has_validation:
+            X_val_tensor = torch.FloatTensor(X_val)
+            y_val_tensor = torch.FloatTensor(y_val)
         
         # 1. Handle Class Imbalance Automatically
         # pos_weight = (count_negative / count_positive)
@@ -423,11 +573,12 @@ class BalancedMLP(BaseEstimator, ClassifierMixin):
         pos_weight = num_neg / (num_pos + 1e-6) 
         
         # 2. Setup Training
-        self.model_ = self._build_model(y.shape[1])
+        self.model_ = self._build_model(y.shape[1]).to(device)
         if self.focal_loss:
             criterion = FocalLoss(gamma=self.focal_gamma, alpha=self.focal_alpha, task_type='multi-label')
         else :
-            criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight if self.balanced else None)
+            pos_weight_dev = pos_weight.to(device) if self.balanced else None
+            criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight_dev if self.balanced else None)
         optimizer = optim.Adam(self.model_.parameters(), lr=self.lr)
 
         # Convert to dataset iterator to keep batch normalizations mathematically stable
@@ -435,25 +586,45 @@ class BalancedMLP(BaseEstimator, ClassifierMixin):
         loader = DataLoader(dataset, batch_size=min(self.batch_size, len(X)), shuffle=True)
 
         # 3. Training Loop
-        self.model_.train()
         for epoch in range(self.epochs):
+            self.model_.train()
+            epoch_train_loss = 0.0
+            batch_count = 0
+
             for batch_X, batch_y in loader:
+                batch_X, batch_y = batch_X.to(device), batch_y.to(device)
                 optimizer.zero_grad()
                 outputs = self.model_(batch_X)
                 loss = criterion(outputs, batch_y)
                 loss.backward()
                 optimizer.step()
+                epoch_train_loss += loss.item()
+                batch_count += 1
+            #Average training loss for epoch    
+            self.train_loss_history_.append(epoch_train_loss / batch_count)
+            #Compute validation
+            if has_validation:
+                self.model_.eval()
+                with torch.no_grad():
+                    X_v, y_v = X_val_tensor.to(device), y_val_tensor.to(device)
+                    val_outputs = self.model_(X_v)
+                    val_loss = criterion(val_outputs, y_v)
+                    self.val_loss_history_.append(val_loss.item())
+            else:
+                # Fallback step so dimensions align nicely across plots
+                self.val_loss_history_.append(np.nan)
             
         self.classes_ = np.arange(y.shape[1])
         return self
 
     def predict_proba(self, X):
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.model_.eval()
         with torch.no_grad():
-            X_tensor = torch.FloatTensor(X)
+            X_tensor = torch.FloatTensor(X).to(device)
             logits = self.model_(X_tensor)
             # BCEWithLogitsLoss outputs logits; sigmoid turns them into 0-1 probabilities
-            probs = torch.sigmoid(logits).numpy()
+            probs = torch.sigmoid(logits).cpu().numpy()
         return probs
 
     def predict(self, X, threshold=0.5):

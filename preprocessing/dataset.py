@@ -133,23 +133,41 @@ class BatAudioPipeline(torch.nn.Module):
         # Remove channel dimension [Num_Windows, Window_Samples] 
         windows = windows.squeeze(0)
         return windows
+    
+    def time_shift(self, audio : torch.Tensor,shift_ratio = 0.25) -> torch.Tensor:
+        max_shift = int(shift_ratio * self.win_samples)
+        shift = random.randint(-max_shift, max_shift)
+        if shift != 0:
+            # Construct clean padding to prevent wrap-around artifacts
+            pad_len = abs(shift)
+            # Create silence padding matching the device of your audio tensors
+            if audio.ndim == 2:
+                # Match the number of channels from the original audio
+                num_channels = audio.shape[0]
+                padding = torch.zeros(num_channels, pad_len, dtype=audio.dtype, device=audio.device)
+            else:
+                # Fallback for 1D audio
+                padding = torch.zeros(pad_len, dtype=audio.dtype, device=audio.device)
+            
+            if shift > 0:
+                # Shift right: Prepend silence
+                shifted_audio = torch.cat([padding, audio], dim=-1)
+            else:
+                # Shift left: Append silence
+                shifted_audio = torch.cat([audio, padding], dim=-1)
+        return shifted_audio
 
-    def Z_normalize_windows(self, windows : torch.Tensor) -> torch.Tensor:
-        mean = windows.mean(dim=-1, keepdim=True)
-        std = windows.std(dim=-1, keepdim=True)
-        normalized_windows = (windows - mean) / (std + 1e-8)
-        return normalized_windows
-
-    def forward(self, file_path : str) -> torch.Tensor:
+    def forward(self, file_path : str,timeshift : bool = False) -> torch.Tensor:
 
         # 0. Load & Time Expand
         audio = self.load_and_expand(file_path)
-
-        # 1. Noise reduce
-        # (Implementation for noise reduction would go here)
         
-        # 2. Bandpass Filter
+        # 1. Bandpass Filter
         audio = self.apply_bandpass(audio)
+
+        # 2. Data augmentation
+        if timeshift :
+            audio = self.time_shift(audio)
 
         # 3. Cut into Windows
         windows = self.window_audio(audio)
@@ -178,7 +196,7 @@ class AugmentationPipeline:
         ir_per_label = max_count / (counts + 1e-9)
         return ir_per_label
         
-    def iterative_oversample(self, X, y, target_percentage=1.0,random_state = 42):
+    def iterative_oversample(self, X, y, target_percentage=0.15,random_state = 42):
         """
         Randomly duplicates samples containing minority labels 
         until the distribution balances out.
@@ -242,8 +260,23 @@ class AugmentationPipeline:
         
         for aug in aug_list[1:]:
             if aug == "time_shift":
-                shift = random.randint(-int(0.1 * windows.shape[-1]), int(0.1 * windows.shape[-1]))
-                augmented_windows = torch.roll(augmented_windows, shifts=shift, dims=-1)
+                # Maximum safe shift of 25% of the window
+                window_len = windows.shape[-1]
+                max_shift = int(0.25 * window_len) 
+                shift = random.randint(-max_shift, max_shift)
+                
+                if shift != 0:
+                    # Construct clean padding to prevent wrap-around artifacts
+                    pad_len = abs(shift)
+                    # Create silence padding matching the device of your audio tensors
+                    padding = torch.zeros((*windows.shape[:-1], pad_len), dtype=windows.dtype, device=windows.device)
+                    
+                    if shift > 0:
+                        # Shift right: Prepend silence, truncate the right edge
+                        augmented_windows = torch.cat([padding, windows[..., :-pad_len]], dim=-1)
+                    else:
+                        # Shift left: Append silence, truncate the left edge
+                        augmented_windows = torch.cat([windows[..., pad_len:], padding], dim=-1)
 
             elif aug == "add_noise" and noise_files:
                 noise_path = random.choice(noise_files)
@@ -279,6 +312,7 @@ class PipistrelleDataset(Dataset):
         resample : bool = False, 
         resample_augment=None,
         online_augment = None,
+        time_shift :bool = False,
         filter_echo : bool = False,
         overlap : float = 0.5,
         encoder : str ="perch2"
@@ -293,6 +327,7 @@ class PipistrelleDataset(Dataset):
         self.resample_augment = resample_augment or [False]
         #First element indicates if online augmentation should happen, other elements are the augmentations to apply during online augmentation
         self.online_augment = online_augment or [False]
+        self.time_shift = time_shift
         self.filter_echo = filter_echo
 
         self.augmentation_pipeline = AugmentationPipeline(online_augment, resample_augment)
@@ -339,23 +374,24 @@ class PipistrelleDataset(Dataset):
         noise_path = random.choice(self.noise_files) if self.noise_files else None
         
         # Run the entire audio preprocessing and augmentation pipeline
-        # Returns shape: [Num_Windows, 1, 128, Frames]
-        windows_tensor = self.pipeline.forward(file_path)
+        # 1. Grab the raw audio windows [Num_Windows, 160000]
+        windows = self.pipeline.forward(file_path)
 
         if self.is_training:
             # If idx >= original_len, this is a cloned/resampled sample
             if idx >= self.original_len:
                 # Apply "Resample Augmentations"
+                windows = self.pipeline.forward(file_path,timeshift= self.time_shift)
                 windows = self.augmentation_pipeline.augment_sample(
-                    windows_tensor, self.resample_augment, self.noise_files, self.pipeline
+                    windows, self.resample_augment, self.noise_files, self.pipeline
                 )
             
             # Apply standard "Online Augmentations" to everyone
             windows = self.augmentation_pipeline.augment_sample(
-                windows_tensor, self.online_augment, self.noise_files, self.pipeline
+                windows, self.online_augment, self.noise_files, self.pipeline
             )
 
-        return windows_tensor, labels
+        return windows, labels
     
 """
 # 1. Load the full CSV

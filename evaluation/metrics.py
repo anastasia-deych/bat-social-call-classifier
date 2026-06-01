@@ -24,6 +24,17 @@ from sklearn.calibration import calibration_curve
 import warnings
 warnings.filterwarnings('ignore')
 
+def calculate_ece(y_true, y_prob, n_bins=5):
+    bins = np.linspace(0, 1, n_bins + 1)
+    ece = 0
+    for bin_lower, bin_upper in zip(bins[:-1], bins[1:]):
+        mask = (y_prob >= bin_lower) & (y_prob < bin_upper)
+        if np.sum(mask) > 0:
+            bin_conf = np.mean(y_prob[mask])
+            bin_acc = np.mean(y_true[mask])
+            ece += np.abs(bin_conf - bin_acc) * np.sum(mask)
+    return ece / len(y_true)
+
 def summarize(values):
     values = np.asarray(values, dtype=float)
     if len(values) == 1:
@@ -831,3 +842,61 @@ def label_confusion(y_true,y_pred_proba,y_pred_binary=None, label_names=None, th
     
     return df_cm
 
+def plot_loss_curves(all_results):
+    """
+    Plots the training and validation loss pathways side-by-side across configurations
+    to visually demonstrate overfitting trends.
+    """
+    unique_models = list(set([res['model'] for res in all_results]))
+    
+    fig, axes = plt.subplots(1, len(unique_models), figsize=(6 * len(unique_models), 5), sharey=False)
+    if len(unique_models) == 1:
+        axes = [axes]
+        
+    for idx, model_name in enumerate(sorted(unique_models)):
+        # Extract matches across all trials for this model variant
+        model_entries = [res for res in all_results if res['model'] == model_name]
+        
+        # Aggregate arrays across folds and trials
+        all_train = []
+        all_val = []
+        for entry in model_entries:
+            all_train.extend(entry['train_histories'])
+            all_val.extend(entry['val_histories'])
+            
+        # Convert lists into matrix footprints [Folds, Epochs]
+        train_matrix = np.array(all_train)
+        val_matrix = np.array(all_val)
+        epochs = np.arange(1, train_matrix.shape[1] + 1)
+        
+        # Calculate mean loss curves
+        mean_train = np.mean(train_matrix, axis=0)
+        mean_val = np.mean(val_matrix, axis=0)
+        
+        # Standard deviation bounds for visual error shading
+        std_train = np.std(train_matrix, axis=0)
+        std_val = np.std(val_matrix, axis=0)
+        
+        ax = axes[idx]
+        
+        # Plot mean trends
+        ax.plot(epochs, mean_train, label='Train Loss', color='royalblue', linewidth=2)
+        ax.plot(epochs, mean_val, label='Val Loss', color='crimson', linewidth=2, linestyle='--')
+        
+        # Add error bounds shading
+        ax.fill_between(epochs, mean_train - std_train, mean_train + std_train, color='royalblue', alpha=0.15)
+        ax.fill_between(epochs, mean_val - std_val, mean_val + std_val, color='crimson', alpha=0.1)
+        
+        ax.set_title(f"{model_name}\n(Mean OOF Progression)", fontsize=13, fontweight='bold')
+        ax.set_xlabel("Epochs", fontsize=11)
+        if idx == 0:
+            ax.set_ylabel("Loss Magnitude", fontsize=11)
+        ax.grid(True, linestyle=':', alpha=0.6)
+        ax.legend(loc='upper right')
+        
+    plt.tight_layout()
+    plt.show()
+
+# Run the function on your output:
+# histories = balancing_mlp(X, y)
+# plot_loss_curves(histories)

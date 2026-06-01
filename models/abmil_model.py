@@ -29,8 +29,12 @@ from sklearn.metrics import (
     f1_score,
 )
 import warnings
+from sklearn.model_selection import RandomizedSearchCV
+from scipy.stats import loguniform
 from iterstrat.ml_stratifiers import MultilabelStratifiedKFold
 #from transformers import PipelineedKFold
+from models.hierarchal_classifier import HierarchicalMultiTaskLoss
+from models.losses import AsymmetricLoss
 from sklearn.base import BaseEstimator, ClassifierMixin
 warnings.filterwarnings('ignore')
 
@@ -122,7 +126,7 @@ class ABMIL(nn.Module):
     """
     
     def __init__(self, n_features, n_labels, hidden_dim=256, dropout=0.2, 
-                 attention_dim=128, label_specific_attention=True):
+                 attention_dim=128, label_specific_attention=True,hierarchal :bool = False):
         """
         Parameters
         ----------
@@ -144,6 +148,7 @@ class ABMIL(nn.Module):
         self.n_features = n_features
         self.n_labels = n_labels
         self.label_specific_attention = label_specific_attention
+        self.hierarchal = hierarchal
         
         # Feature processing
         self.feature_fc = nn.Sequential(
@@ -165,7 +170,7 @@ class ABMIL(nn.Module):
         # Classification head
         self.classifier = nn.Sequential(
             nn.Linear(hidden_dim, n_labels),
-            nn.Sigmoid()
+            nn.Sigmoid() if not hierarchal else nn.Identity()
         )
     
     @staticmethod
@@ -254,6 +259,8 @@ def train_abmil(
     label_specific_attention=True,
     device='cpu',
     verbose=True,
+    hierarchal = False,
+    lambda_penalty = 2,
 ):
     """
     Train ABMIL model.
@@ -323,7 +330,13 @@ def train_abmil(
     ).to(device)
     
     # Loss & optimizer
-    criterion = nn.BCELoss()
+    #criterion = nn.BCELoss() if not hierarchal else HierarchicalMultiTaskLoss(lambda_penalty=lambda_penalty)
+    criterion = AsymmetricLoss(gamma_neg=2, gamma_pos=1, clip=0)
+    #label_freq = y_train.mean(axis=0)
+    #pos_weights = (1.0 - label_freq) / (label_freq + 1e-6)
+    #pos_weights = torch.FloatTensor(pos_weights).to(device)
+    #criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weights)
+    
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode='min', factor=0.5, patience=5 #, verbose=verbose
@@ -364,7 +377,6 @@ def train_abmil(
             batch_loss = batch_loss / len(X_batch)
             batch_loss.backward()
             optimizer.step()
-            
             train_loss += batch_loss.item()
         
         train_loss /= len(train_loader)
@@ -393,7 +405,7 @@ def train_abmil(
                         batch_loss += loss
                         
                         all_y_true.append(y_bag.cpu().numpy())
-                        all_y_pred.append(logits.detach().cpu().numpy())
+                        all_y_pred.append(logits.detach().cpu().numpy() if not hierarchal else torch.sigmoid(logits).cpu().numpy())
                     
                     batch_loss = batch_loss / len(X_batch)
                     val_loss += batch_loss.item()
@@ -434,7 +446,7 @@ def train_abmil(
     return model, history, scaler
 
 
-def predict_abmil(model, X_bags, scaler, device='cpu'):
+def predict_abmil(model, X_bags, scaler, device='cpu',hierarchal = False):
     """
     Get predictions from trained ABMIL model.
     
@@ -467,7 +479,7 @@ def predict_abmil(model, X_bags, scaler, device='cpu'):
             
             # Predict
             logits, attention_weights = model(X_bag_tensor, return_attention=True)
-            y_pred = logits.detach().cpu().numpy()
+            y_pred = logits.detach().cpu().numpy() if not hierarchal else torch.sigmoid(logits).cpu().numpy()
             predictions.append(y_pred)
             
             # Store attention weights
@@ -480,12 +492,9 @@ def predict_abmil(model, X_bags, scaler, device='cpu'):
 #Sklearn abMIL wrapper
 
 class ABMILSklearnWrapper(BaseEstimator, ClassifierMixin):
-    """Scikit-Learn wrapper for the custom ABMIL architecture."""
-    
     def __init__(self, hidden_dim=256, attention_dim=128, dropout=0.2, 
                  learning_rate=1e-3, weight_decay=1e-5, batch_size=4, 
-                 n_epochs=50, n_labels=5, device='cpu'):
-        # Keep every parameter explicitly in __init__ for Scikit-Learn cloning mechanisms
+                 n_epochs=50, n_labels=5, device='cpu',hierarchal = False,lambda_penalty = 2):
         self.hidden_dim = hidden_dim
         self.attention_dim = attention_dim
         self.dropout = dropout
@@ -495,18 +504,23 @@ class ABMILSklearnWrapper(BaseEstimator, ClassifierMixin):
         self.n_epochs = n_epochs
         self.n_labels = n_labels
         self.device = device
+        self.hierarchal = hierarchal
+        self.lambda_penalty = lambda_penalty
         
     def fit(self, X, y):
-        """
-        X : list of arrays (the bags)
-        y : ndarray of shape (n_bags, n_labels)
-        """
-        # Call your native training script using the instance's tuned parameters
+        # Stratified split inside the fit method to provide a true val set for early stopping
+        mskf = MultilabelStratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+        train_idx, val_idx = next(mskf.split(X, y))
+        
+        X_train = [X[i] for i in train_idx]
+        X_val = [X[i] for i in val_idx]
+        y_train, y_val = y[train_idx], y[val_idx]
+
         self.model_, self.history_, self.scaler_ = train_abmil(
-            X_bags_train=X,
-            y_train=y,
-            X_bags_val=None,
-            y_val=None,
+            X_bags_train=X_train,
+            y_train=y_train,
+            X_bags_val=X_val,  # Fixed: No longer None!
+            y_val=y_val,
             n_labels=self.n_labels,
             n_epochs=self.n_epochs,
             batch_size=self.batch_size,
@@ -517,15 +531,16 @@ class ABMILSklearnWrapper(BaseEstimator, ClassifierMixin):
             dropout=self.dropout,
             label_specific_attention=True,
             device=self.device,
+            hierarchal=self.hierarchal,
+            lambda_penalty=self.lambda_penalty,
             verbose=False
         )
-        # Standard scikit-learn convention requires returning self
         return self
         
     def predict_proba(self, X):
         """X : list of arrays (the test bags)"""
         # Delegate directly to your custom prediction module
-        preds, _ = predict_abmil(self.model_, X, self.scaler_, device=self.device)
+        preds, _ = predict_abmil(self.model_, X, self.scaler_, device=self.device,hierarchal = self.hierarchal)
         return preds
 
     def predict(self, X):
@@ -594,7 +609,7 @@ def abmil_classifier_cv(X_bags,y,n_splits=5,random_state=42,n_labels=5):
 
     return y_true_all, y_pred_all
 
-def abmil_classifier_tuned(X_bags, y, n_split_out=5,n_split_in=5, num_trials=5,random_state=42):
+def abmil_classifier_tuned(X_bags, y, n_split_out=5,n_split_in=3, num_trials=1,random_state=42,n_iter_search = 4):
     # 1. Initialize the split
     y = np.array(y) 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -605,11 +620,13 @@ def abmil_classifier_tuned(X_bags, y, n_split_out=5,n_split_in=5, num_trials=5,r
         print(f"Starting Trial {i+1}/{num_trials} with random_state={random_state + i}...")
         model_params = {
             'ABMIL': {
-                'model': ABMILSklearnWrapper(n_labels=y.shape[1],n_epochs=50, batch_size=4, device=device), #note : standard scaler already implemented
+                'model': ABMILSklearnWrapper(n_labels=y.shape[1],n_epochs=40, batch_size=4, device=device), #note : standard scaler already implemented
                 'params': {
-                    'hidden_dim': [128, 256],
-                    'attention_dim': [64, 128],
-                    'learning_rate': [1e-3, 5e-4]
+                    'hidden_dim': [64, 128, 256],
+                    'attention_dim': [32, 64, 128],
+                    'dropout': [0.1, 0.3, 0.5],
+                    'learning_rate': loguniform(1e-4, 5e-3),
+                    'weight_decay': loguniform(1e-6, 1e-2)
                 }
             }   
         }
@@ -623,6 +640,7 @@ def abmil_classifier_tuned(X_bags, y, n_split_out=5,n_split_in=5, num_trials=5,r
             all_y_true = []
             all_y_pred_proba = []
             all_test_indices = []
+            best_models = []
 
             outer_scores = []
 
@@ -632,9 +650,20 @@ def abmil_classifier_tuned(X_bags, y, n_split_out=5,n_split_in=5, num_trials=5,r
                 X_bags_test = [X_bags[i] for i in test_idx]
                 y_train, y_test = y[train_idx], y[test_idx]
 
-
-                clf = GridSearchCV(estimator=mp['model'],param_grid=mp['params'],cv=inner_cv,
-                                   scoring=scorer,refit=True,n_jobs=1)
+                clf = RandomizedSearchCV(
+                    estimator=mp['model'],
+                    param_distributions=mp['params'],
+                    n_iter=n_iter_search, # Controls your exact compute budget per fold
+                    cv=inner_cv,
+                    scoring=scorer,
+                    refit=True,
+                    n_jobs=1,
+                    random_state=random_state+fold,
+                    verbose=3
+                )       
+                
+                #clf = GridSearchCV(estimator=mp['model'],param_grid=mp['params'],cv=inner_cv,
+                #                   scoring=scorer,refit=True,n_jobs=1)
 
                 # fit on outer-train
                 clf.fit(X_bags_train, y_train)
@@ -660,6 +689,7 @@ def abmil_classifier_tuned(X_bags, y, n_split_out=5,n_split_in=5, num_trials=5,r
                 all_y_true.append(y_test)
                 all_y_pred_proba.append(y_pred_proba)
                 all_test_indices.append(test_idx)
+                best_models.append(clf.best_estimator_)
             
             #Concatenate fold results to get out of fold predictions
             all_y_true = np.concatenate(all_y_true, axis=0)
@@ -668,6 +698,7 @@ def abmil_classifier_tuned(X_bags, y, n_split_out=5,n_split_in=5, num_trials=5,r
             all_results.append({
                 'trial': i,
                 'model': model_name,
+                'best_models' : best_models,
 
                 'mean_AP': np.mean(outer_scores),
                 'std_AP': np.std(outer_scores, ddof=1),
@@ -679,3 +710,4 @@ def abmil_classifier_tuned(X_bags, y, n_split_out=5,n_split_in=5, num_trials=5,r
     
     # Return as numpy arrays for easier use in your compute_cv_stats
     return all_results
+

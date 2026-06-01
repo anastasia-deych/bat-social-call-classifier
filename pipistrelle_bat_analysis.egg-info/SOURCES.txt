@@ -2,7 +2,12 @@ README.md
 setup.py
 evaluation/__init__.py
 evaluation/metrics.py
+models/MLP_balancing.py
 models/__init__.py
+models/abmil_model.py
+models/attention_probe.py
+models/feature_generation.py
+models/focal_loss.py
 models/linear_probes.py
 pipistrelle_bat_analysis.egg-info/PKG-INFO
 pipistrelle_bat_analysis.egg-info/SOURCES.txt
@@ -10,6 +15,8 @@ pipistrelle_bat_analysis.egg-info/dependency_links.txt
 pipistrelle_bat_analysis.egg-info/requires.txt
 pipistrelle_bat_analysis.egg-info/top_level.txt
 preprocessing/__init__.py
+preprocessing/data_splitter.py
 preprocessing/dataset.py
 testing/__init__.py
 testing/classifier_comparison.py
+testing/linear_probe_tests.py

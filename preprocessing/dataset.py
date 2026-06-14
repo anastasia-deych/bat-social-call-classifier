@@ -19,6 +19,13 @@ import torchaudio.functional as AF
 from scipy.signal import butter, sosfilt
 
 class BatAudioPipeline(torch.nn.Module):
+    """
+    This class encapsulates the entire audio preprocessing pipeline for the bat recordings, including:
+    - Loading audio files
+    - Applying bandpass filters to isolate relevant frequencies
+    - Time expansion to make ultrasonic calls analytable for encoders
+    - Windowing into fixed-size segments
+    - Optional data augmentation (e.g., time shifting)"""
     def __init__(
         self, 
         target_sr=16000, 
@@ -150,6 +157,10 @@ class BatAudioPipeline(torch.nn.Module):
 
 
 class AugmentationPipeline:
+    """
+    This class manages both resampling-time and online data augmentations for the bat audio dataset.
+    - Resampling augmentations are applied only to the duplicated samples during the iterative oversampling process.
+    - Online augmentations are applied to all training samples during the __getitem__ phase of the dataset loader"""
     def __init__(
         self, 
         online_augment=None,
@@ -275,6 +286,20 @@ class AugmentationPipeline:
 
 
 class PipistrelleDataset(Dataset):
+    """Custom Dataset class for loading and preprocessing pipistrelle bat audio recordings with optional data augmentation and resampling strategies.
+    
+    - data_input: Either a path to a CSV file containing metadata and labels or a pre-loaded pandas DataFrame.
+    - root_dir: The base directory where audio files are located.  
+    - noise_folder: Optional directory containing noise audio files for augmentation.
+    - is_training: Whether the dataset is being used for training (enables augmentations).
+    - resample: Whether to perform iterative oversampling to balance classes.
+    - resample_augment: List of augmentations to apply only to the duplicated samples during resampling.
+    - online_augment: List of augmentations to apply to all training samples during __getitem__.
+    - time_shift: Whether to include time shifting as an augmentation option.
+    - filter_echo: Whether to apply a bandreject filter to remove echolocation echoes during preprocessing.
+    - overlap: The percentage of overlap between windows when segmenting audio.
+    - encoder: The name of the encoder model for which the preprocessing pipeline should be optimized (e.g., 'perch2', 'effnetb0', 'NLM_BEATs').
+    """
     def __init__(
         self, 
         data_input : str | pd.DataFrame, 
@@ -365,16 +390,3 @@ class PipistrelleDataset(Dataset):
 
         return windows, labels
     
-"""
-# 1. Load the full CSV
-df = pd.read_csv("full_dataset.csv")
-label_cols = ['type_a', 'type_b', 'type_c', 'type_d', 'echo']
-
-# 2. Perform a Stratified Split (e.g., 80% train, 20% validation)
-msss = MultilabelStratifiedShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
-
-# Get the indices
-for train_index, val_index in msss.split(df['relative_path'], df[label_cols]):
-    train_df = df.iloc[train_index].reset_index(drop=True)
-    val_df = df.iloc[val_index].reset_index(drop=True)
-"""

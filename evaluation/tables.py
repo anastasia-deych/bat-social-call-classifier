@@ -1,6 +1,14 @@
+"""
+Functions to process raw cross-validation outputs into latex summary tables
+"""
+
 import numpy as np
 from sklearn.metrics import average_precision_score
 from evaluation.metrics import calculate_ece
+import pandas as pd
+from sklearn.metrics import brier_score_loss, log_loss
+from sklearn.metrics import roc_auc_score
+from sklearn.metrics.pairwise import cosine_similarity
 
 def process_folds_to_table(balancing_results, augmented_results):
     """
@@ -83,7 +91,7 @@ def process_folds_to_table(balancing_results, augmented_results):
 
 def generate_balancing_latex_table(results_dict):
     """
-    Generates an Ilse et al. styled LaTeX table for balancing techniques,
+    Generates a LaTeX table for balancing techniques,
     automatically bolding the top-performing method for each metric column.
     """
     header_cols = ['Type A AP', 'Type B AP', 'Type C AP', 'Type D AP', 'Echo AP', 'cmAP']
@@ -144,9 +152,6 @@ def generate_balancing_latex_table(results_dict):
     latex_str.append(r"\end{table}")
     
     return "\n".join(latex_str)
-
-import numpy as np
-from sklearn.metrics import average_precision_score
 
 def process_encoder_folds_to_table(all_results_dict):
     """
@@ -248,7 +253,7 @@ def process_encoder_folds_to_table(all_results_dict):
 
 def generate_encoder_latex_table(results_dict):
     """
-    Generates an Ilse et al. styled LaTeX table including a Chance-Level baseline at the top,
+    Generates a LaTeX table including a Chance-Level baseline at the top,
     grouping classifiers under their parent Encoders using multirow.
     """
     header_cols = ['Type A AP', 'Type B AP', 'Type C AP', 'Type D AP', 'Echo AP', 'cmAP']
@@ -426,7 +431,7 @@ def process_encoder_folds_to_table_no_echo(all_results_dict):
 
 def generate_encoder_latex_table_no_echo(results_dict):
     """
-    Generates an Ilse et al. styled LaTeX table excluding Echo AP,
+    Generates an LaTeX table excluding Echo AP,
     grouping classifiers under their parent Encoders using multirow.
     """
     # Updated: Removed 'Echo AP'
@@ -511,8 +516,8 @@ def generate_encoder_latex_table_no_echo(results_dict):
 
 def process_abmil_vs_perch_table(abmil_results, per2_results):
     """
-    Computes summary metrics (Mean \pm SEM) across your evaluation cross-validation folds
-    and builds an aesthetic LaTeX code block ready for publication.
+    Computes summary metrics (Mean \pm SEM) across evaluation cross-validation folds
+    and builds a LaTeX code block for comparing abmil and base probes results
     """
     header_cols = ['Type A AP', 'Type B AP', 'Type C AP', 'Type D AP', 'Echo AP', 'cmAP']
     label_names = ['Type A', 'Type B', 'Type C', 'Type D', 'Echo']
@@ -598,14 +603,10 @@ def process_abmil_vs_perch_table(abmil_results, per2_results):
 
     return "\n".join(latex_str)
 
-import numpy as np
-import pandas as pd
-from sklearn.metrics import brier_score_loss, log_loss
-
 def generate_abmil_calibration_latex(abmil_results, label_names, n_bins=10, strategy="uniform"):
     """
     Computes calibration metrics for the ABMIL model across trials and 
-    returns a pristine, publication-ready LaTeX booktabs table string.
+    returns a LaTeX booktabs table string.
     """
     # Extract only ABMIL entries
     abmil_trials = [r for r in abmil_results if r['model'] == 'ABMIL']
@@ -691,11 +692,6 @@ def generate_abmil_calibration_latex(abmil_results, label_names, n_bins=10, stra
     
     # Combine everything with system-native clean carriage line endings
     return "\n".join(latex_lines)
-
-import numpy as np
-import pandas as pd
-from sklearn.metrics import roc_auc_score
-from sklearn.metrics.pairwise import cosine_similarity
 
 def evaluate_avex_multilabel(embeddings_dict, y_multilabel, label_name="tab:avex_multilabel"):
     """
@@ -803,11 +799,12 @@ def evaluate_avex_multilabel(embeddings_dict, y_multilabel, label_name="tab:avex
     
     return latex_table
 
-import pandas as pd
-import numpy as np
-from sklearn.metrics import average_precision_score
 
 def generate_master_species_table_with_totals(y_pred_proba, metadata_csv="ood_metadata.csv"):
+    """Generates a master table of Average Precision (AP) scores for each bat species and call type,
+      including a summary row for all recordings.
+      metadata_csv: Path to the CSV file containing the metadata with true labels and species information.
+      y_pred_proba: 2D array of shape (N_samples, N_classes) containing predicted probabilities for each class."""
     df = pd.read_csv(metadata_csv)
     class_cols = ['type_a', 'type_b', 'type_c', 'type_d', 'echo']
     
@@ -869,6 +866,7 @@ def generate_master_species_table_with_totals(y_pred_proba, metadata_csv="ood_me
 
 
 def convert_to_latex_table(master_table_df, label="tab:master_species_ap"):
+    """Converts the master species AP dataframe into a LaTeX table string with proper formatting."""
     df_latex = master_table_df.copy()
     
     # Scientific formatting: Italics for real species, Bold for the summary row
@@ -916,21 +914,3 @@ def convert_to_latex_table(master_table_df, label="tab:master_species_ap"):
     )
     
     return latex_wrapper
-
-# =====================================================================
-# EXECUTION
-# =====================================================================
-# 1. Generate DataFrame with individual species and the bottom global totals row
-#master_evaluation_table = generate_master_species_table_with_totals(y_pred_proba_ood, str(dir / "ood_metadata.csv"))
-#
-## 2. Print Markdown check to terminal
-#print(master_evaluation_table.to_markdown(index=False))
-#
-## 3. Convert and output your final LaTeX code block
-#latex_code_string = convert_to_latex_table(master_evaluation_table)
-#print("\n" + "="*40 + " GENERATED LATEX CODE " + "="*40 + "\n")
-#print(latex_code_string)
-#
-## 3. Or save it directly to a .tex snippet file to import into your main document
-#with open("master_species_table.tex", "w") as f:
-#    f.write(latex_code_string)

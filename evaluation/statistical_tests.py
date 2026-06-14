@@ -2,15 +2,17 @@ import numpy as np
 import pandas as pd
 import scipy.stats as stats
 import scikit_posthocs as sp
-
-import numpy as np
-import pandas as pd
-import scipy.stats as stats
+from sklearn.metrics import average_precision_score
+import matplotlib.pyplot as plt
+import seaborn as sns
+from matplotlib.colors import ListedColormap, Normalize
+from matplotlib.cm import ScalarMappable
+from matplotlib.ticker import FixedLocator
 from sklearn.metrics import average_precision_score
 
 def perform_encoder_statistical_analysis(all_encoders_results, label_names=None):
     """
-    Performs a Friedman test followed by a custom, robust Nemenyi post-hoc test
+    Performs a Friedman test followed by a  Nemenyi post-hoc test
     to compare encoder performance across matched cross-validation blocks.
     Bypasses scikit-posthocs to avoid NaN issues.
     """
@@ -117,19 +119,10 @@ def perform_encoder_statistical_analysis(all_encoders_results, label_names=None)
         print(f"Result: No significant variance found among encoders (p >= {alpha}).")
 
     return df_stat
-import numpy as np
-import pandas as pd
-import scipy.stats as stats
-import matplotlib.pyplot as plt
-import seaborn as sns
-from matplotlib.colors import ListedColormap, Normalize
-from matplotlib.cm import ScalarMappable
-from matplotlib.ticker import FixedLocator
-from sklearn.metrics import average_precision_score
 
 def perform_and_plot_nemenyi(all_encoders_results, label_names=None):
     """
-    Performs Friedman + Nemenyi tests and plots a professional, discrete 
+    Performs Friedman + Nemenyi to compare encoder performance and plots a  
     significance heatmap with exact p-values rendered inside the cells.
     """
     if label_names is None:
@@ -277,20 +270,10 @@ def perform_and_plot_nemenyi(all_encoders_results, label_names=None):
     plt.show()
 
 
-import numpy as np
-import pandas as pd
-import scipy.stats as stats
-import matplotlib.pyplot as plt
-import seaborn as sns
-from matplotlib.colors import ListedColormap, Normalize
-from matplotlib.cm import ScalarMappable
-from matplotlib.ticker import FixedLocator
-from sklearn.metrics import average_precision_score
-
 def evaluate_and_plot_mlp_strategies(balancing_results, augmented_results, label_names=None):
     """
     Performs Friedman + Nemenyi post-hoc statistical tests across 5 single MLP 
-    training strategies and plots a professional, publication-quality heatmap.
+    training strategies and plots a heatmap.
     """
     if label_names is None:
         label_names = ['Type A', 'Type B', 'Type C', 'Type D', 'Echo']
@@ -449,89 +432,6 @@ def evaluate_and_plot_mlp_strategies(balancing_results, augmented_results, label
 
     plt.subplots_adjust(left=0.25, right=0.85, top=0.88, bottom=0.22)
     plt.show()
-
-import scipy.stats as stats
-
-def evaluate_abmil_vs_perch_statistical(abmil_results, per2_results, label_names=None):
-    """
-    Performs a paired Wilcoxon Signed-Rank test across perfectly aligned evaluation blocks
-    to establish performance differences between Perch 2.0 + LR and Tuned ABMIL.
-    """
-    if label_names is None:
-        label_names = ['Type A', 'Type B', 'Type C', 'Type D', 'Echo']
-
-    structured_data = {}
-
-    # --- Step 1: Align ABMIL Evaluation Blocks ---
-    for trial_entry in abmil_results:
-        y_true_folds = trial_entry['y_true_cv']          
-        y_pred_proba_folds = trial_entry['y_pred_proba_cv']  
-        trial_idx = trial_entry['trial']
-
-        for fold_idx in range(len(y_true_folds)):
-            y_true = np.array(y_true_folds[fold_idx])
-            y_pred_proba = np.array(y_pred_proba_folds[fold_idx])
-            
-            for c_idx, class_name in enumerate(label_names):
-                ap_score = average_precision_score(y_true[:, c_idx], y_pred_proba[:, c_idx])
-                block_id = (trial_idx, fold_idx, class_name)
-                
-                if block_id not in structured_data:
-                    structured_data[block_id] = {}
-                structured_data[block_id]['Tuned ABMIL'] = ap_score
-
-    # --- Step 2: Align Perch 2.0 Evaluation Blocks ---
-    perch_lr_entries = [entry for entry in per2_results if entry.get('model') == 'Logistic Regression']
-    for trial_entry in perch_lr_entries:
-        y_true_folds = trial_entry['y_true_cv']          
-        y_pred_proba_folds = trial_entry['y_pred_proba_cv']  
-        trial_idx = trial_entry['trial']
-
-        for fold_idx in range(len(y_true_folds)):
-            y_true = np.array(y_true_folds[fold_idx])
-            y_pred_proba = np.array(y_pred_proba_folds[fold_idx])
-            
-            for c_idx, class_name in enumerate(label_names):
-                ap_score = average_precision_score(y_true[:, c_idx], y_pred_proba[:, c_idx])
-                block_id = (trial_idx, fold_idx, class_name)
-                
-                if block_id in structured_data:
-                    structured_data[block_id]['Perch 2.0 + LR'] = ap_score
-
-    df_stat = pd.DataFrame.from_dict(structured_data, orient='index').dropna()
-    
-    N = len(df_stat)
-    print(f"=== Statistical Setup ===")
-    print(f"Number of perfectly aligned evaluation validation blocks (N): {N}\n")
-
-    # --- Step 3: Paired Two-Sided Wilcoxon Test ---
-    v_perch = df_stat['Perch 2.0 + LR'].values
-    v_abmil = df_stat['Tuned ABMIL'].values
-    
-    stat, p_val = stats.wilcoxon(v_perch, v_abmil, alternative='two-sided')
-    
-    print(f"=== Wilcoxon Signed-Rank Test Results ===")
-    print(f"Calculated Test Statistic: {stat:.4f}")
-    print(f"Asymptotic p-value: {p_val:.4e}")
-    
-    if p_val < 0.05:
-        print(f"Result: STATISTICALLY SIGNIFICANT CHANGE DETECTED (p < 0.05).")
-    else:
-        print(f"Result: No statistically significant baseline divergence confirmed.")
-        
-    print(f"\nMean Performance Ranks:")
-    print(f" - Perch 2.0 + LR mean AP over blocks: {np.mean(v_perch):.4f}")
-    print(f" - Tuned ABMIL    mean AP over blocks: {np.mean(v_abmil):.4f}")
-
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-from matplotlib.colors import ListedColormap, Normalize
-from matplotlib.cm import ScalarMappable
-from matplotlib.ticker import FixedLocator
-import scipy.stats as stats
-from sklearn.metrics import average_precision_score
 
 def evaluate_and_plot_linear_probe_algorithms(all_results, label_names=None):
     """
@@ -695,20 +595,10 @@ def evaluate_and_plot_linear_probe_algorithms(all_results, label_names=None):
     plt.subplots_adjust(left=0.25, right=0.85, top=0.88, bottom=0.22)
     plt.show()
 
-import numpy as np
-import pandas as pd
-import scipy.stats as stats
-import seaborn as sns
-import matplotlib.pyplot as plt
-from matplotlib.colors import ListedColormap, Normalize
-from matplotlib.cm import ScalarMappable
-from matplotlib.ticker import FixedLocator
-from sklearn.metrics import average_precision_score
-
 def evaluate_and_plot_model_comparison_abmil(linear_results, abmil_results, label_names=None):
     """
-    Performs Friedman + Nemenyi post-hoc statistical tests across competitive 
-    models (excluding the dummy baseline) and plots a publication-quality heatmap.
+    Performs Friedman + Nemenyi post-hoc statistical tests across abmil and the 4 core linear probe 
+    models (excluding the dummy baseline) and plots a heatmap.
     """
     if label_names is None:
         raise ValueError("Please provide the 'label_names' list used during training.")

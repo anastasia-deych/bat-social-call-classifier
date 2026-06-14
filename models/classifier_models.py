@@ -1,15 +1,15 @@
-
+"""
+This modul defines a MLP classifier with options for handling class imbalance and focal loss, 
+as well as a simple prevalence-based baseline classifier for multi-label classification tasks.
+The BalancedMLP class implements a feedforward neural network with configurable architecture and training parameters,
+while the MultilabelPrevalenceBaseline class provides a simple baseline that predicts based on label prevalence in the training data."""
 import numpy as np
-
 from sklearn.base import BaseEstimator, ClassifierMixin
-
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
-
 from sklearn.base import BaseEstimator, ClassifierMixin
-
 from models.focal_loss import FocalLoss
 
 

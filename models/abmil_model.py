@@ -1,13 +1,8 @@
 """
 Multiple Instance Learning (MIL) for Multi-Label Bioacoustic Classification.
-
-Implements:
-- ABMIL (Attention-Based MIL): Uses attention mechanism to weight instance importance
-- Multi-label setup: Each recording has multiple labels
-- Window-level features: Uses un-pooled window embeddings instead of mean-pooled
-
-Key concept: Instead of mean-pooling all windows, ABMIL learns which windows
-are most important for predicting each label.
+This module implements an Attention-Based Multiple Instance Learning (ABMIL) model for multi-label classification of bioacoustic recordings. 
+Each recording is treated as a "bag" of instances (e.g., time windows or segments), 
+and the model learns to predict multiple labels for the entire bag based on the features of its instances.
 """
 
 import numpy as np
@@ -18,22 +13,18 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
-from sklearn.model_selection import GridSearchCV, train_test_split
+from sklearn.model_selection import GridSearchCV
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import (
     average_precision_score,
     make_scorer,
     roc_auc_score,
-    hamming_loss,
-    accuracy_score,
-    f1_score,
 )
 import warnings
 from sklearn.model_selection import RandomizedSearchCV
 from sklearn.linear_model import LogisticRegression
 from scipy.stats import loguniform
 from iterstrat.ml_stratifiers import MultilabelStratifiedKFold
-#from transformers import PipelineedKFold
 from sklearn.base import BaseEstimator, ClassifierMixin
 warnings.filterwarnings('ignore')
 import random
@@ -117,16 +108,17 @@ class ABMIL(nn.Module):
     Attention-Based Multiple Instance Learning.
     
     Architecture:
-    1. Feature extraction (optional): Maps instance features through FC layer
+    1. Feature extraction : Maps instance features through FC layer
     2. Attention mechanism: Learns which instances are important
     3. Aggregation: Weighted sum using attention weights
     4. Classification: Multi-label head (sigmoid)
+    5. Fall back to logistic regression for ultra-minority classes
     
     For multi-label: Trains one attention module per label (label-specific attention)
     """
     
     def __init__(self, n_features, n_labels, hidden_dim=256, dropout=0.2, 
-                 attention_dim=128, label_specific_attention=True,label_specific_features=False):
+                 attention_dim=128, label_specific_attention=True):
         """
         Parameters
         ----------
@@ -141,14 +133,13 @@ class ABMIL(nn.Module):
         attention_dim : int
             Dimension of attention mechanism
         label_specific_attention : bool
-            If True, use separate attention for each label (recommended for multi-label)
+            If True, use separate attention for each label
         """
         super().__init__()
         
         self.n_features = n_features
         self.n_labels = n_labels
         self.label_specific_attention = label_specific_attention
-        self.label_specific_features = label_specific_features
         
         # Feature processing
         self.feature_fc = nn.Sequential(
@@ -156,15 +147,6 @@ class ABMIL(nn.Module):
             nn.ReLU(),
             nn.Dropout(dropout),
         )
-
-        if label_specific_features :
-            self.feature_extractors = nn.ModuleList([
-                nn.Sequential(
-                nn.Linear(n_features, hidden_dim),
-                nn.ReLU(),
-                nn.Dropout(dropout))
-                for _ in range(n_labels)
-            ])
         
         if label_specific_attention:
             # Separate attention for each label
@@ -176,11 +158,6 @@ class ABMIL(nn.Module):
             # Shared attention across all labels
             self.attention = self._build_attention(hidden_dim, attention_dim)
         
-        # Classification head
-        #self.classifier = nn.Sequential(
-        #    nn.Linear(hidden_dim, n_labels),
-        #    nn.Sigmoid()
-        #)
         self.classifier = nn.Linear(hidden_dim, n_labels)
             
     
@@ -212,8 +189,7 @@ class ABMIL(nn.Module):
             Attention weights per label
         """
         # Feature processing
-        if not self.label_specific_features :
-            H = self.feature_fc(x_bag)  # (n_instances, hidden_dim)
+        H = self.feature_fc(x_bag)  # (n_instances, hidden_dim)
         
         if self.label_specific_attention:
             # Compute attention per label
@@ -221,9 +197,6 @@ class ABMIL(nn.Module):
             attention_weights_list = []
             
             for label_idx in range(self.n_labels):
-
-                if self.label_specific_features :
-                    H = self.feature_extractors[label_idx](x_bag)
                 # Attention for this label
                 A = self.attention_modules[label_idx](H)  # (n_instances, 1)
                 A = torch.softmax(A, dim=0)  # (n_instances, 1)
@@ -254,149 +227,6 @@ class ABMIL(nn.Module):
         return logits, attention_weights
     
 # ============================================================================
-# ABMIL HYBRID MODEL
-# ============================================================================
-
-class ABMILHybrid(nn.Module):
-    """
-    Hybrid Attention-Based MIL.
-
-    - Labels 1..K-1: gated attention aggregation (per-label)
-    - Label 0 (Type A): mean pooling over windows (no attention parameters)
-
-    All labels share the same feature projection layer.
-    Each label has its own classifier head.
-    """
-
-    def __init__(
-        self,
-        n_features: int,
-        n_labels: int,
-        hidden_dim: int = 256,
-        attention_dim: int = 128,
-        dropout: float = 0.2,
-        mean_pool_labels: list = None,  # indices of labels to mean-pool
-    ):
-        """
-        Parameters
-        ----------
-        n_features : int
-            Dimension of encoder output embeddings.
-        n_labels : int
-            Total number of labels, 5 in this case
-        hidden_dim : int
-            Hidden dimension after feature projection.
-        attention_dim : int
-            Internal dimension of gated attention.
-        dropout : float
-            Dropout after feature projection ReLU.
-        mean_pool_labels : list of int or None
-            Label indices that use mean pooling instead of attention.
-            Defaults to [0] (Type A).
-        """
-        super().__init__()
-
-        self.n_features = n_features
-        self.n_labels = n_labels
-        self.mean_pool_labels = set(mean_pool_labels if mean_pool_labels is not None else [0])
-
-        # ------------------------------------------------------------------
-        # 1. Shared feature projection (all labels)
-        # ------------------------------------------------------------------
-        self.feature_fc = nn.Sequential(
-            nn.Linear(n_features, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-        )
-
-        # ------------------------------------------------------------------
-        # 2. Gated attention modules (only for non-mean-pool labels)
-        # ------------------------------------------------------------------
-        # Use nn.ModuleDict so indices are explicit and inspectable
-        self.attention_V = nn.ModuleDict()
-        self.attention_U = nn.ModuleDict()
-        self.attention_w = nn.ModuleDict()
-
-        for k in range(n_labels):
-            if k not in self.mean_pool_labels:
-                self.attention_V[str(k)] = nn.Linear(hidden_dim, attention_dim)
-                self.attention_U[str(k)] = nn.Linear(hidden_dim, attention_dim)
-                self.attention_w[str(k)] = nn.Linear(attention_dim, 1)
-
-        # ------------------------------------------------------------------
-        # 3. Per-label classifier heads (all labels)
-        # ------------------------------------------------------------------
-        self.classifiers = nn.ModuleList(
-            [nn.Linear(hidden_dim, 1) for _ in range(n_labels)]
-        )
-
-    def _gated_attention(self, H: torch.Tensor, k: int) -> torch.Tensor:
-        """
-        Gated attention weights for label k.
-
-        Parameters
-        ----------
-        H : (n_instances, hidden_dim)
-        k : int  label index
-
-        Returns
-        -------
-        A : (n_instances, 1)  softmax-normalised weights
-        """
-        gate = torch.tanh(self.attention_V[str(k)](H)) * \
-               torch.sigmoid(self.attention_U[str(k)](H))   # (N, attention_dim)
-        A = self.attention_w[str(k)](gate)                   # (N, 1)
-        return torch.softmax(A, dim=0)                       # (N, 1)
-
-    def forward(self, x_bag: torch.Tensor, return_attention: bool = False):
-        """
-        Forward pass for one bag (recording).
-
-        Parameters
-        ----------
-        x_bag : (n_instances, n_features)
-        return_attention : bool
-            If True, return attention weights per label.
-            Mean-pool labels return None in their slot.
-
-        Returns
-        -------
-        logits : (n_labels,)
-        attention_weights : list[Tensor or None] or None
-        """
-        # Shared projection
-        H = self.feature_fc(x_bag)          # (n_instances, hidden_dim)
-
-        logits_list = []
-        attention_weights_list = []
-
-        for k in range(self.n_labels):
-
-            if k in self.mean_pool_labels:
-                # ── Mean pooling (no attention parameters) ──────────────
-                M_k = H.mean(dim=0, keepdim=True)           # (1, hidden_dim)
-                if return_attention:
-                    # Uniform weights for interpretability plots
-                    n = H.shape[0]
-                    attention_weights_list.append(
-                        torch.full((n,), 1.0 / n, device=H.device)
-                    )
-            else:
-                # ── Gated attention ─────────────────────────────────────
-                A = self._gated_attention(H, k)             # (n_instances, 1)
-                M_k = torch.sum(A * H, dim=0, keepdim=True) # (1, hidden_dim)
-                if return_attention:
-                    attention_weights_list.append(A.squeeze(1))
-
-            logit = torch.sigmoid(self.classifiers[k](M_k)).squeeze()
-            logits_list.append(logit)
-
-        logits = torch.stack(logits_list)                   # (n_labels,)
-        attention_weights = attention_weights_list if return_attention else None
-
-        return logits, attention_weights
-
-# ============================================================================
 # TRAINING & EVALUATION
 # ============================================================================
 
@@ -414,10 +244,8 @@ def train_abmil(
     attention_dim=128,
     dropout=0.2,
     label_specific_attention=True,
-    label_specific_features = False,
     device='cpu',
     verbose=True,
-    hybrid = False,
     random_state = 42,
     ensemble = False,
 ):
@@ -446,6 +274,8 @@ def train_abmil(
     device : str
         'cpu' or 'cuda'
     verbose : bool
+    random_state : int
+    ensemble : bool  decides whether to use Validation data for early stopping
     
     Returns
     -------
@@ -487,32 +317,18 @@ def train_abmil(
     n_features = train_dataset.X_bags_scaled[0].shape[1]
     
     # Model
-    if not hybrid :
-        model = ABMIL(
-            n_features=n_features,
-            n_labels=n_labels,
-            hidden_dim=hidden_dim,
-            attention_dim=attention_dim,
-            dropout=dropout,
-            label_specific_attention=label_specific_attention,
-            label_specific_features = label_specific_features,
-        ).to(device)
-    else :
-        model =  ABMILHybrid(
-            n_features=n_features,
-            n_labels=n_labels,
-            hidden_dim=hidden_dim,
-            attention_dim=attention_dim,
-            dropout=dropout,
-            mean_pool_labels=[0],   # Type A is index 0
-        ).to(device)
+    model = ABMIL(
+        n_features=n_features,
+        n_labels=n_labels,
+        hidden_dim=hidden_dim,
+        attention_dim=attention_dim,
+        dropout=dropout,
+        label_specific_attention=label_specific_attention,
+    ).to(device)
+
     
     # Loss & optimizer
     criterion = nn.BCEWithLogitsLoss()
-    #label_freq = y_train.mean(axis=0)
-    #pos_weights = (1.0 - label_freq) / (label_freq + 1e-6)
-    #pos_weights = torch.FloatTensor(pos_weights).to(device)
-    #criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weights)
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     if not ensemble :
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(
@@ -672,157 +488,14 @@ def predict_abmil(model, X_bags, scaler, device='cpu'):
     
     return np.array(predictions), attention_dict
 
-#ensemble prediction method
-def ensemble_predict(X_bags, abmil_model, lr_model, scaler_abmil, 
-                     scaler_lr, type_a_idx=0, alpha=0.5):
-    """
-    Blend abMIL and LR predictions.
-    For Type A: use LR only (alpha=0 for that label).
-    For other labels: use abMIL only or blend.
-    
-    Parameters
-    ----------
-    alpha : float
-        Weight for abMIL predictions (1-alpha for LR).
-        Per-label control via alpha_per_label below.
-    """
-    # abMIL predictions
-    abmil_preds, _ = predict_abmil(abmil_model, X_bags, scaler_abmil)
-    # (n_bags, n_labels)
-    
-    # LR predictions on mean-pooled embeddings
-    X_meanpool = np.array([bag.mean(axis=0) for bag in X_bags])
-    X_scaled = scaler_lr.transform(X_meanpool)
-    lr_preds = lr_model.predict_proba(X_scaled)
-    # (n_bags, n_labels)
-    
-    # Per-label blending weights for abMIL
-    # Type A (index 0): use LR only → alpha=0
-    # All others: use abMIL only → alpha=1
-    alpha_per_label = np.ones(abmil_preds.shape[1])
-    alpha_per_label[type_a_idx] = 0.0  # fully defer to LR for Type A
-    
-    blended = alpha_per_label * abmil_preds + (1 - alpha_per_label) * lr_preds
-    return blended
-
-#Sklearn abMIL wrapper
-#
-#class ABMILSklearnWrapper(BaseEstimator, ClassifierMixin):
-#    def __init__(self, hidden_dim=256, attention_dim=128, dropout=0.2, 
-#                 learning_rate=1e-3, weight_decay=1e-5, batch_size=4, 
-#                 n_epochs=20, n_labels=5, device='cpu',random_state = 42,
-#                 label_specific_features = False,hybrid = False,
-#                 ensemble = False,ensemble_labels=None, 
-#                 ensemble_alpha=0.0, lr_C=1.0) :
-#        self.hidden_dim = hidden_dim
-#        self.attention_dim = attention_dim
-#        self.dropout = dropout
-#        self.learning_rate = learning_rate
-#        self.weight_decay = weight_decay
-#        self.batch_size = batch_size
-#        self.n_epochs = n_epochs
-#        self.n_labels = n_labels
-#        self.device = device
-#        
-#        self.random_state = random_state
-#
-#        self.label_specific_features = label_specific_features
-#        self.hybrid = hybrid
-#        self.ensemble = ensemble
-#        self.ensemble_labels = ensemble_labels  # e.g. [0] for Type A
-#        self.ensemble_alpha = ensemble_alpha    # weight for abMIL (0 = full LR)
-#        self.lr_C = lr_C
-#
-#    def _get_ensemble_labels(self):
-#        return set(self.ensemble_labels) if self.ensemble_labels is not None else {0}
-#
-#    def _meanpool(self, X):
-#        """Mean-pool a list of bags → (n_bags, n_features) array."""
-#        return np.array([bag.mean(axis=0) for bag in X])
-#        
-#    def fit(self, X, y):
-#        # Stratified split inside the fit method to provide a true val set for early stopping
-#        mskf = MultilabelStratifiedKFold(n_splits=5, shuffle=True, random_state=self.random_state)
-#        train_idx, val_idx = next(mskf.split(X, y))
-#        
-#        X_train = [X[i] for i in train_idx]
-#        X_val = [X[i] for i in val_idx]
-#        y_train, y_val = y[train_idx], y[val_idx]
-#
-#        #train abmil
-#        self.model_, self.history_, self.scaler_ = train_abmil(
-#            X_bags_train=X_train,
-#            y_train=y_train,
-#            X_bags_val=X_val,  # Fixed: No longer None!
-#            y_val=y_val,
-#            n_labels=self.n_labels,
-#            n_epochs=self.n_epochs,
-#            batch_size=self.batch_size,
-#            learning_rate=self.learning_rate,
-#            weight_decay=self.weight_decay,
-#            hidden_dim=self.hidden_dim,
-#            attention_dim=self.attention_dim,
-#            dropout=self.dropout,
-#            label_specific_attention=True,
-#            label_specific_features = self.label_specific_features,
-#            device=self.device,
-#            verbose=False,
-#            hybrid = self.hybrid,
-#            random_state= self.random_state,
-#        )
-#
-#        #train lr on mean pooled embeddings
-#        if self.ensemble:
-#            # Fit scaler on training + validation bags  [TODO]
-#            X_train_pool = self._meanpool(X_train)
-#            
-#            self.lr_scaler_ = StandardScaler()
-#            X_train_pool_scaled = self.lr_scaler_.fit_transform(X_train_pool)
-#
-#            self.lr_classifiers_ = {}
-#            for k in self._get_ensemble_labels():
-#                lr = LogisticRegression(C=self.lr_C, max_iter=1000, random_state=self.random_state)
-#                lr.fit(X_train_pool_scaled, y_train[:, k])
-#                self.lr_classifiers_[k] = lr
-#        return self
-#        
-#    def predict_proba(self, X):
-#        """X : list of arrays (the test bags)"""
-#         # ── abMIL predictions ────────────────────────────────────────────
-#        abmil_preds, _ = predict_abmil(
-#            self.model_, X, self.scaler_, device=self.device
-#        )  # (n_bags, n_labels)
-#
-#        if not self.ensemble:
-#            return abmil_preds
-#
-#        # ── LR predictions on mean-pooled embeddings ─────────────────────
-#        X_pool = self._meanpool(X)
-#        X_pool_scaled = self.lr_scaler_.transform(X_pool)
-#
-#        preds = abmil_preds.copy()
-#        for k in self._get_ensemble_labels():
-#            lr_pred = self.lr_classifiers_[k].predict_proba(X_pool_scaled)[:, 1]
-#            # Blend: alpha * abMIL + (1 - alpha) * LR
-#            # alpha=0.0 → pure LR for this label
-#            preds[:, k] = (self.ensemble_alpha * abmil_preds[:, k] 
-#                          + (1 - self.ensemble_alpha) * lr_pred)
-#
-#        return preds
-#    def predict(self, X):
-#        # Multi-label classification thresholding shortcut
-#        return (self.predict_proba(X) > 0.5).astype(int)
-#    
-#    # Define classes property to prevent scikit-learn multi-label metadata errors
-#    @property
-#    def classes_(self):
-#        return [np.array([0, 1]) for _ in range(self.n_labels)]
-
 class ABMILSklearnWrapper(BaseEstimator, ClassifierMixin):
+    """
+    SKLearn wrapper for ABMIL to enable use in GridSearchCV and RandomizedSearchCV.
+    This wrapper handles training, prediction, and ultra-minority fallback logic for ABMIL.
+    """
     def __init__(self, hidden_dim=256, attention_dim=128, dropout=0.2, 
                  learning_rate=1e-3, weight_decay=1e-5, batch_size=4, 
                  n_epochs=20, n_labels=5, device='cpu', random_state=42,
-                 label_specific_features=False, hybrid=False,
                  ensemble=False, ensemble_labels=None, lr_C=1.0):
         self.hidden_dim = hidden_dim
         self.attention_dim = attention_dim
@@ -834,50 +507,45 @@ class ABMILSklearnWrapper(BaseEstimator, ClassifierMixin):
         self.n_labels = n_labels
         self.device = device
         self.random_state = random_state
-        self.label_specific_features = label_specific_features
-        self.hybrid = hybrid
         self.ensemble = ensemble
         self.ensemble_labels = ensemble_labels  
         self.lr_C = lr_C
 
     def _get_ensemble_labels(self):
+        """
+        Safely retrieves the set of labels to ensemble on, defaulting to all labels if not specified.
+        """
         return set(self.ensemble_labels) if self.ensemble_labels is not None else {0}
 
     def _meanpool(self, X):
+        """
+        Utility function to mean-pool bags for the logistic regression fallback.
+        """
         return np.array([bag.mean(axis=0) for bag in X])
         
     def fit(self, X, y):
+        """
+        Fit the ABMIL model to the data.
+            - X: list of arrays, each array is (n_windows, n_features) for one recording
+            - y: (n_bags, n_labels) array of multi-label targets
+        Fits ABMIL on the training data, and if ensembling is enabled, also fits logistic regression models for specified labels.
+        """
         # Graceful handling if data is too small to split 5-fold internally
-        try:
-            mskf = MultilabelStratifiedKFold(n_splits=5, shuffle=True, random_state=self.random_state)
-            train_idx, val_idx = next(mskf.split(X, y))
-        except Exception:
-            # Fallback for ultra-small subsets during search iterations
-            mskf = MultilabelStratifiedKFold(n_splits=3, shuffle=True, random_state=self.random_state)
-            train_idx, val_idx = next(mskf.split(X, y))
-        
-        X_train = [X[i] for i in train_idx]
-        X_val = [X[i] for i in val_idx]
-        y_train, y_val = y[train_idx], y[val_idx]
 
-        # 1. Train the base ABMIL model on the 80% split (Fixed Epochs, NO Early Stopping)
-        # We pass X_val and y_val to train_abmil *ONLY* to track the validation loss 
-        # in self.history_ so your calling function can log it. No early stopping logic is triggered.
+        # 1. Train the base ABMIL model (Fixed Epochs, NO Early Stopping)
         self.model_, self.history_, self.scaler_ = train_abmil(
             X_bags_train=X, y_train=y,
-            #X_bags_train=X_train, y_train=y_train,
-            #X_bags_val=X_val, y_val=y_val,  # Used strictly for history loss logging
             n_labels=self.n_labels, n_epochs=self.n_epochs, batch_size=self.batch_size,
             learning_rate=self.learning_rate, weight_decay=self.weight_decay,
             hidden_dim=self.hidden_dim, attention_dim=self.attention_dim, dropout=self.dropout,
-            label_specific_attention=True, label_specific_features=self.label_specific_features,
-            device=self.device, verbose=False, hybrid=self.hybrid, random_state=self.random_state,
+            label_specific_attention=True,
+            device=self.device, verbose=False, random_state=self.random_state,
             ensemble = self.ensemble
         )
 
         # 2. If ensembling is active, build the base LR and stacker
         if self.ensemble:
-            X_train_pool = self._meanpool(X) #use both validation and training
+            X_train_pool = self._meanpool(X) 
             self.lr_scaler_ = StandardScaler()
             X_train_pool_scaled = self.lr_scaler_.fit_transform(X_train_pool)
 
@@ -887,22 +555,10 @@ class ABMILSklearnWrapper(BaseEstimator, ClassifierMixin):
                 base_lr.fit(X_train_pool_scaled, y[:, k])
                 self.base_lr_classifiers_[k] = base_lr
 
-            ## 3. Use the untouched 20% validation split to train the Meta-Learner cleanly
-            #X_val_pool_scaled = self.lr_scaler_.transform(self._meanpool(X_val))
-            #abmil_val_preds, _ = predict_abmil(self.model_, X_val, self.scaler_, device=self.device)
-#
-            #self.meta_stackers_ = {}
-            #for k in self._get_ensemble_labels():
-            #    base_lr_val_pred = self.base_lr_classifiers_[k].predict_proba(X_val_pool_scaled)[:, 1]
-            #    meta_features_val = np.column_stack([abmil_val_preds[:, k], base_lr_val_pred])
-            #    
-            #    meta_lr = LogisticRegression(C=1.0, max_iter=1000, random_state=self.random_state)
-            #    meta_lr.fit(meta_features_val, y_val[:, k])
-            #    self.meta_stackers_[k] = meta_lr
-
         return self
         
     def predict_proba(self, X):
+        """Predict probabilities for the given data."""
         abmil_preds, _ = predict_abmil(self.model_, X, self.scaler_, device=self.device)
 
         if not self.ensemble:
@@ -929,62 +585,20 @@ class ABMILSklearnWrapper(BaseEstimator, ClassifierMixin):
 # ============================================================================
 # USAGE 
 # ============================================================================
-
-def abmil_classifier_cv(X_bags,y,n_splits=5,random_state=42,n_labels=5): 
-    label_names = ['Type A', 'Type B', 'Type C', 'Type D', 'Echo']
-    y_np = np.array(y)
-    kf = MultilabelStratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
-
-    # 2. Setup Storage for metrics function
-    y_true_all = []  # List of 5 arrays
-    y_pred_all = []  # List of 5 arrays
-
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    print(f"Starting Cross-Validation on Device: {device}")
-
-    # 3. Cross-Validation Loop
-    for fold, (train_idx, test_idx) in enumerate(kf.split(X_bags, y_np)):
-        print(f"\n{'='*30}")
-        print(f" Processing Fold {fold + 1} / {n_splits} ")
-        print(f"{'='*30}")
-
-        # Split bags and labels for this fold
-        X_bags_train = [X_bags[i] for i in train_idx]
-        X_bags_test = [X_bags[i] for i in test_idx]
-        y_train, y_test = y_np[train_idx], y_np[test_idx]
-
-        # Train ABMIL (The function creates a fresh model instance internally)
-        model, history, scaler = train_abmil(
-            X_bags_train,
-            y_train,
-            X_bags_val=None, 
-            y_val=None,
-            n_labels=n_labels,
-            n_epochs=100,
-            batch_size=4,
-            learning_rate=1e-3,
-            weight_decay=1e-5,
-            hidden_dim=256,
-            attention_dim=128,
-            dropout=0.2,
-            label_specific_attention=True,
-            device=device,
-            verbose=False # Set to False to keep console clean during CV
-        )
-
-        # Predict on test set
-        print(f"Evaluating Fold {fold + 1}...")
-        y_pred_test, _ = predict_abmil(model, X_bags_test, scaler, device=device)
-
-        # Store results
-        y_true_all.append(y_test)
-        y_pred_all.append(y_pred_test)
-
-    return y_true_all, y_pred_all
-
 def abmil_classifier_tuned(X_bags, y, n_split_out=5,n_split_in=5, num_trials=5,random_state=42,
-                           n_iter_search = 4,label_specific_features = False,hybrid = False,
-                           ensemble = False,ensemble_labels = [0]):
+                           n_iter_search = 4):
+    """
+    Trains and evaluates ABMIL with nested cross-validation and hyperparameter tuning.
+    X_bags: list of arrays, each array is (n_windows, n_features) for one recording
+    y: (n_bags, n_labels) array of multi-label targets
+    n_iter_search: int, number of parameter settings that are sampled in RandomizedSearchCV for each fold
+    n_split_out: int, number of splits for outer cross-validation
+    n_split_in: int, number of splits for inner cross-validation
+    num_trials: int, number of repeated nested CV runs with different random seeds for robustness
+    random_state: int, base random seed for reproducibility
+    Returns a list of results dictionaries containing OOF predictions, best models, and performance metrics for each trial.
+    """
+     
     # 1. Initialize the split
     y = np.array(y) 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -1004,16 +618,14 @@ def abmil_classifier_tuned(X_bags, y, n_split_out=5,n_split_in=5, num_trials=5,r
         model_params = {
             'ABMIL': {
                 'model': ABMILSklearnWrapper(n_labels=y.shape[1],n_epochs=20, batch_size=4,
-                                             device=device,label_specific_features=label_specific_features,
-                                             hybrid=hybrid,ensemble = ensemble,ensemble_labels=ensemble_labels,random_state=trial_seed), #note : standard scaler already implemented
+                                             device=device,ensemble = True,ensemble_labels=[0],random_state=trial_seed),
                 'params': {
                     'hidden_dim': [64, 128, 256],
                     'attention_dim': [32, 64, 128],
                     'dropout': [0.1, 0.3, 0.5],
                     'learning_rate': loguniform(1e-4, 5e-3),
                     'weight_decay': loguniform(1e-6, 1e-2),
-                    **({'lr_C': [0.1, 1.0, 10.0]} 
-                        if ensemble else {})
+                    'lr_C': [0.1, 1.0, 10.0],
                 }
             }   
         }
@@ -1107,9 +719,13 @@ def abmil_classifier_tuned(X_bags, y, n_split_out=5,n_split_in=5, num_trials=5,r
     # Return as numpy arrays for easier use in your compute_cv_stats
     return all_results
 
-import pandas as pd
 
 def analyze_best_hyperparameters(abmil_results):
+    """
+    Analyzes the best hyperparameters from a list of ABMIL results.
+    abmil_results: list of dicts, each containing 'best_models' which is a list of fitted ABMILSklearnWrapper instances from each fold and trial.
+    """
+
     all_params = []
     
     # 1. Loop through all runs and extract parameters from the best models
@@ -1174,15 +790,14 @@ def analyze_best_hyperparameters(abmil_results):
         
     return top_combinations
 
-
-import random
-import numpy as np
-import torch
-from sklearn.model_selection import GridSearchCV
-from sklearn.metrics import make_scorer, average_precision_score
-# Ensure MultilabelStratifiedKFold and ABMILSklearnWrapper are imported here
-
 def abmil_classifier_deployement(X_bags, y, n_split=5, random_state=42):
+    """
+    Trains ABMIL in non nested cv for tuning a restricted hyperparameter grid deduced from the previous nested CV results.
+    Done for finding the best hyperparameters to train a final model on 100% of the data for deployment and OOD evaluation.
+    X_bags: list of arrays, each array is (n_windows, n_features) for one recording
+    y: (n_bags, n_labels) array of multi-label targets
+    """
+
     # 1. Initialize the dataset and environment
     y = np.array(y) 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -1191,10 +806,6 @@ def abmil_classifier_deployement(X_bags, y, n_split=5, random_state=42):
     
     ensemble = True
     ensemble_labels = [0]
-    
-    # FIXED: Split comma assignment into clean, separate lines
-    label_specific_features = False
-    hybrid = False
 
     trial_seed = random_state
     
@@ -1208,8 +819,8 @@ def abmil_classifier_deployement(X_bags, y, n_split=5, random_state=42):
         'ABMIL': {
             'model': ABMILSklearnWrapper(
                 n_labels=y.shape[1], n_epochs=20, batch_size=4,
-                device=device, label_specific_features=label_specific_features,
-                hybrid=hybrid, ensemble=ensemble, ensemble_labels=ensemble_labels, 
+                device=device,
+                ensemble=ensemble, ensemble_labels=ensemble_labels, 
                 random_state=trial_seed
             ),
             'params': {
@@ -1233,8 +844,6 @@ def abmil_classifier_deployement(X_bags, y, n_split=5, random_state=42):
         fold_train_histories = []
         fold_val_histories = []
 
-        # FIXED: Changed param_distributions -> param_grid 
-        # FIXED: Removed the unsupported random_state argument
         clf = GridSearchCV(
             estimator=mp['model'],
             param_grid=mp['params'], 
@@ -1271,15 +880,17 @@ def abmil_classifier_deployement(X_bags, y, n_split=5, random_state=42):
     return all_results
 
 def train_abmil_all_data(X_bags, y, random_state=42):
+    """
+    Trains ABMIL on all the data using best hyperparameters found from previous tuning step
+    X_bags: list of arrays, each array is (n_windows, n_features) for one recording
+    y: (n_bags, n_labels) array of multi-label targets
+    """
     # 1. Initialize the dataset and environment
     y = np.array(y) 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     
     ensemble = True
     ensemble_labels = [0]
-
-    label_specific_features = False
-    hybrid = False
 
     trial_seed = random_state
     
@@ -1291,8 +902,8 @@ def train_abmil_all_data(X_bags, y, random_state=42):
 
     clf =ABMILSklearnWrapper(
                 n_labels=y.shape[1], n_epochs=20, batch_size=4,
-                device=device, label_specific_features=label_specific_features,
-                hybrid=hybrid, ensemble=ensemble, ensemble_labels=ensemble_labels, 
+                device=device, 
+                ensemble=ensemble, ensemble_labels=ensemble_labels, 
                 random_state=trial_seed, hidden_dim=256,attention_dim=128,dropout=0.1,
                 learning_rate= 1e-4,weight_decay=1e-6,lr_C = 0.1
             )
@@ -1305,6 +916,11 @@ def train_abmil_all_data(X_bags, y, random_state=42):
     return clf
 
 def evaluate_abmil_ood(fitted_wrapper,X_bags_ood) :
+    """
+    Evaluates the fitted ABMIL model on OOD data.
+     - fitted_wrapper: The ABMILSklearnWrapper instance that has been trained on all data
+    - X_bags_ood: List of arrays for OOD recordings, list of (n_windows, n_features) arrays
+    """
     # 2. Extract the underlying PyTorch items required by your predict_abmil function
     pt_model = fitted_wrapper.model_   # The trained neural net
     scaler = fitted_wrapper.scaler_     # The standard scaler calibrated to your data training distribution

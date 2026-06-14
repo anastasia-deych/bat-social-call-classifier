@@ -24,6 +24,11 @@ from sklearn.calibration import calibration_curve
 import warnings
 warnings.filterwarnings('ignore')
 
+
+#################################################################################
+## METRIC CALCULATION AND SUMMARIZATION FUNCTIONS
+#################################################################################
+
 def calculate_ece(y_true, y_prob, n_bins=10, strategy='uniform'):
     """Calculates the Expected Calibration Error (ECE) for binary targets."""
     if strategy == 'uniform':
@@ -207,7 +212,11 @@ def compile_results_folds(all_results,label_names=None,stats : bool = True,encod
 
     return compiled_results
 
-def generate_metrics_table2(all_results,label_names=None) :
+
+#################################################################################
+## VISUALIZATION FUNCTIONS FOR METRICS
+#################################################################################
+def generate_metrics_table(all_results,label_names=None) :
     global_rows = []
     class_rows = []
 
@@ -241,413 +250,16 @@ def generate_metrics_table2(all_results,label_names=None) :
     class_df = pd.DataFrame(class_rows)
     return global_df, class_df
 
-def generate_metrics_table(all_results,label_names=None):
-    global_rows = []
-    class_rows = []
-    for model, stats in all_results.items():
-        global_row = {
-            "Model": model,
-            "Macro-AUC": f"{stats['Macro-AUC'][0]:.3f} ± {max(stats['Macro-AUC'][1]-stats['Macro-AUC'][0], stats['Macro-AUC'][0]-stats['Macro-AUC'][2]) :.3f}",
-            "cmAP": f"{stats['cmAP'][0]:.3f} ± {max(stats['cmAP'][1]-stats['cmAP'][0], stats['cmAP'][0]-stats['cmAP'][2]):.3f}",
-            "Brier Score": f"{stats['Brier (macro) mean'][0]:.4f} ± {max(stats['Brier (macro) mean'][1]-stats['Brier (macro) mean'][0], stats['Brier (macro) mean'][0]-stats['Brier (macro) mean'][2]):.3f}",
-            "Log-Loss": f"{stats['Log-Loss (macro) mean'][0]:.3f} ± {max(stats['Log-Loss (macro) mean'][1]-stats['Log-Loss (macro) mean'][0], stats['Log-Loss (macro) mean'][0]-stats['Log-Loss (macro) mean'][2]):.3f}"
-        }
-        global_rows.append(global_row)
-
-        class_row = {
-            "Model": model,
-            "AP type A": f"{stats['AP per label'][0][label_names[0]]:.3f} ± {max(stats['AP per label'][1][label_names[0]]-stats['AP per label'][0][label_names[0]], stats['AP per label'][0][label_names[0]]-stats['AP per label'][2][label_names[0]]):.3f}",
-            "AP type B": f"{stats['AP per label'][0][label_names[1]]:.3f} ± {max(stats['AP per label'][1][label_names[1]]-stats['AP per label'][0][label_names[1]], stats['AP per label'][0][label_names[1]]-stats['AP per label'][2][label_names[1]]):.3f}",
-            "AP type C": f"{stats['AP per label'][0][label_names[2]]:.3f} ± {max(stats['AP per label'][1][label_names[2]]-stats['AP per label'][0][label_names[2]], stats['AP per label'][0][label_names[2]]-stats['AP per label'][2][label_names[2]]):.3f}",
-            "AP type D": f"{stats['AP per label'][0][label_names[3]]:.3f} ± {max(stats['AP per label'][1][label_names[3]]-stats['AP per label'][0][label_names[3]], stats['AP per label'][0][label_names[3]]-stats['AP per label'][2][label_names[3]]):.3f}",
-            "AP Echo": f"{stats['AP per label'][0][label_names[4]]:.3f} ± {max(stats['AP per label'][1][label_names[4]]-stats['AP per label'][0][label_names[4]], stats['AP per label'][0][label_names[4]]-stats['AP per label'][2][label_names[4]]):.3f}"
-        }
-        class_rows.append(class_row)
-
-    global_df = pd.DataFrame(global_rows)
-    class_df = pd.DataFrame(class_rows)
-    return global_df, class_df
-
-"""Example Usage in Notebook
-df_results = generate_metrics_table(results_vault)
-display(df_results)
-"""
-
-def plot_model_comparison(all_results, metrics_to_plot=None, title="Model Performance Comparison"):
-    """
-    Plots mean performance with [Min, Max] error bars for multiple models.
-    
-    Args:
-        all_results (dict): Dictionary where keys are model names and values are 
-                            the output of your compute_cv_stats function.
-        metrics_to_plot (list): List of metric keys to include (e.g., ['Macro-AUC', 'cmAP'])
-    """
-    if metrics_to_plot is None:
-        metrics_to_plot = ['Macro-AUC', 'cmAP', 'Brier (macro) mean', 'Log-Loss (macro) mean']
-    
-    models = list(all_results.keys())
-    n_metrics = len(metrics_to_plot)
-    n_models = len(models)
-    
-    # Set up the plot dimensions
-    fig, ax = plt.subplots(figsize=(12, 7))
-    
-    # Grouped bar settings
-    width = 0.8 / n_models  # Total group width is 0.8
-    x = np.arange(n_metrics)
-    
-    # Standard colors for bats/nature themes
-    colors = plt.cm.viridis(np.linspace(0, 0.8, n_models))
-
-    for i, model_name in enumerate(models):
-        means = []
-        lower_err = []
-        upper_err = []
-        
-        for m_key in metrics_to_plot:
-            stats = all_results[model_name][m_key] # [mean, max, min]
-            
-            mean_val = stats[0]
-            max_val = stats[1]
-            min_val = stats[2]
-            
-            means.append(mean_val)
-            # Matplotlib yerr format: [ [lower_offsets], [upper_offsets] ]
-            lower_err.append(mean_val - min_val)
-            upper_err.append(max_val - mean_val)
-        
-        # Calculate x-offset for this specific model's bars
-        offset = i * width - (width * n_models) / 2 + width / 2
-        
-        ax.bar(x + offset, means, width, 
-               yerr=[lower_err, upper_err], 
-               label=model_name, 
-               color=colors[i],
-               capsize=5, 
-               alpha=0.85,
-               edgecolor='white')
-
-    # Formatting
-    ax.set_title(title, fontsize=16, pad=20)
-    ax.set_xticks(x)
-    ax.set_xticklabels(metrics_to_plot, fontsize=11)
-    ax.set_ylabel("Score (Mean with Min/Max Range)")
-    ax.legend(title="Algorithms", bbox_to_anchor=(1.05, 1), loc='upper left')
-    ax.grid(axis='y', linestyle='--', alpha=0.3)
-    
-    plt.tight_layout()
-    plt.show()
-
-
-def plot_comprehensive_results(all_results, labels, title="Model Evaluation"):
-    sns.set_context("paper")
-    sns.set_style("whitegrid")
-    
-    # We now have 3 subplots
-    fig, axes = plt.subplots(3, 1, figsize=(12, 16))
-    colors = plt.cm.viridis(np.linspace(0, 0.8, len(all_results)))
-    width = 0.8 / len(all_results)
-
-    # --- Subplot 1: Global Metrics (Macro-AUC & cmAP) ---
-    ax1 = axes[0]
-    global_keys = ['Macro-AUC', 'cmAP']
-    x_global = np.arange(len(global_keys))
-
-    for i, (model_name, stats) in enumerate(all_results.items()):
-        means = [stats[k][0] for k in global_keys]
-        yerr = [[stats[k][0]-stats[k][2] for k in global_keys], 
-                [stats[k][1]-stats[k][0] for k in global_keys]]
-        
-        offset = i * width - (width * len(all_results)) / 2 + width / 2
-        ax1.bar(x_global + offset, means, width, yerr=yerr, label=model_name, 
-                color=colors[i], capsize=5, alpha=0.8, edgecolor='white')
-
-    ax1.set_title("Global Performance: Macro-AUC vs cmAP", fontsize=14, fontweight='bold')
-    ax1.set_xticks(x_global)
-    ax1.set_xticklabels(['Macro-AUC', 'cmAP (mAP)'], fontsize=12)
-    ax1.set_ylabel("Score (0.0 - 1.0)")
-    ax1.set_ylim(0, 1.1)
-    ax1.legend(loc='upper right')
-
-    # --- Subplot 2: Per-Class Average Precision ---
-    ax2 = axes[1]
-    x_labels = np.arange(len(labels))
-    
-    for i, (model_name, stats) in enumerate(all_results.items()):
-        ap_data = stats['AP per label'] # [mean_dict, max_dict, min_dict]
-        means = [ap_data[0][l] for l in labels]
-        yerr = [[ap_data[0][l] - ap_data[2][l] for l in labels], 
-                [ap_data[1][l] - ap_data[0][l] for l in labels]]
-        
-        offset = i * width - (width * len(all_results)) / 2 + width / 2
-        ax2.bar(x_labels + offset, means, width, yerr=yerr, 
-                color=colors[i], capsize=3, alpha=0.8, edgecolor='white')
-
-    ax2.set_title("Per-Class Average Precision", fontsize=14, fontweight='bold')
-    ax2.set_xticks(x_labels)
-    ax2.set_xticklabels(labels, rotation=35, ha='right')
-    ax2.set_ylabel("AP Score")
-    ax2.set_ylim(0, 1.1)
-
-    # --- Subplot 3: Error Metrics (Brier & Log-Loss) ---
-    ax3 = axes[2]
-    error_metrics = ['Brier (macro) mean', 'Log-Loss (macro) mean']
-    x_err = np.arange(len(error_metrics))
-    
-    for i, (model_name, stats) in enumerate(all_results.items()):
-        means = [stats[m][0] for m in error_metrics]
-        yerr = [[stats[m][0]-stats[m][2] for m in error_metrics], 
-                [stats[m][1]-stats[m][0] for m in error_metrics]]
-        
-        offset = i * width - (width * len(all_results)) / 2 + width / 2
-        ax3.bar(x_err + offset, means, width, yerr=yerr, 
-                color=colors[i], capsize=5, alpha=0.8, edgecolor='white')
-
-    ax3.set_title("Calibration Error", fontsize=14, fontweight='bold')
-    ax3.set_xticks(x_err)
-    ax3.set_xticklabels(['Brier Score', 'Log-Loss'], fontsize=12)
-    ax3.set_ylabel("Error Value")
-
-    plt.suptitle(title, fontsize=20, y=1.02)
-    plt.tight_layout()
-    plt.show()
-
-
-
-def plot_comprehensive_results2(all_results, labels, title="Model Evaluation"):
-    sns.set_context("paper")
-    sns.set_style("whitegrid")
-    
-    fig, axes = plt.subplots(3, 1, figsize=(14, 20)) # Increased size slightly
-    colors = plt.cm.viridis(np.linspace(0, 0.8, len(all_results)))
-    width = 0.8 / len(all_results)
-    
-    handles, legend_labels = [], []
-
-    # --- HELPER: Manual Zoom Function ---
-    def apply_manual_zoom(ax, data_points, padding=0.1):
-        """Forces the Y-axis to zoom in on the data range."""
-        if not data_points: return
-        d_min, d_max = min(data_points), max(data_points)
-        diff = d_max - d_min
-        # If there's no difference (e.g. all 1.0), use a default range
-        if diff == 0:
-            ax.set_ylim(d_min - 0.05, d_min + 0.05)
-        else:
-            ax.set_ylim(d_min - (diff * padding), d_max + (diff * padding))
-
-    # --- Subplot 1: Global Metrics ---
-    ax1 = axes[0]
-    global_keys = ['Macro-AUC', 'cmAP']
-    x_global = np.arange(len(global_keys))
-    points_for_zoom1 = []
-
-    for i, (model_name, stats) in enumerate(all_results.items()):
-        means = [stats[k][0] for k in global_keys]
-        low_err = [stats[k][0] - stats[k][2] for k in global_keys]
-        high_err = [stats[k][1] - stats[k][0] for k in global_keys]
-        
-        # Track every low/high point for scaling
-        points_for_zoom1.extend([m - l for m, l in zip(means, low_err)])
-        points_for_zoom1.extend([m + h for m, h in zip(means, high_err)])
-        
-        offset = i * width - (width * len(all_results)) / 2 + width / 2
-        bar = ax1.bar(x_global + offset, means, width, yerr=[low_err, high_err], 
-                      color=colors[i], capsize=4, alpha=0.8, edgecolor='white')
-        
-        if model_name not in legend_labels:
-            handles.append(bar)
-            legend_labels.append(model_name)
-
-    ax1.set_title("Global Performance: Macro-AUC vs cmAP", fontsize=15, fontweight='bold')
-    ax1.set_xticks(x_global)
-    ax1.set_xticklabels(['Macro-AUC', 'cmAP (mAP)'], fontsize=12)
-    ax1.set_ylabel("Score")
-    apply_manual_zoom(ax1, points_for_zoom1)
-
-    # --- Subplot 2: Per-Class Average Precision ---
-    ax2 = axes[1]
-    x_labels = np.arange(len(labels))
-    points_for_zoom2 = []
-    
-    for i, (model_name, stats) in enumerate(all_results.items()):
-        ap_data = stats['AP per label']
-        means = [ap_data[0][l] for l in labels]
-        low_err = [ap_data[0][l] - ap_data[2][l] for l in labels]
-        high_err = [ap_data[1][l] - ap_data[0][l] for l in labels]
-        
-        points_for_zoom2.extend([m - l for m, l in zip(means, low_err)])
-        points_for_zoom2.extend([m + h for m, h in zip(means, high_err)])
-        
-        offset = i * width - (width * len(all_results)) / 2 + width / 2
-        ax2.bar(x_labels + offset, means, width, yerr=[low_err, high_err], 
-                color=colors[i], capsize=3, alpha=0.8, edgecolor='white')
-
-    ax2.set_title("Per-Class Average Precision", fontsize=15, fontweight='bold')
-    ax2.set_xticks(x_labels)
-    ax2.set_xticklabels(labels, rotation=35, ha='right')
-    ax2.set_ylabel("AP Score")
-    apply_manual_zoom(ax2, points_for_zoom2)
-
-    # --- Subplot 3: Error Metrics ---
-    ax3 = axes[2]
-    error_metrics = ['Brier (macro) mean', 'Log-Loss (macro) mean']
-    x_err = np.arange(len(error_metrics))
-    points_for_zoom3 = []
-    
-    for i, (model_name, stats) in enumerate(all_results.items()):
-        means = [stats[m][0] for m in error_metrics]
-        low_err = [stats[m][0] - stats[m][2] for m in error_metrics]
-        high_err = [stats[m][1] - stats[m][0] for m in error_metrics]
-        
-        points_for_zoom3.extend([m - l for m, l in zip(means, low_err)])
-        points_for_zoom3.extend([m + h for m, h in zip(means, high_err)])
-        
-        offset = i * width - (width * len(all_results)) / 2 + width / 2
-        ax3.bar(x_err + offset, means, width, yerr=[low_err, high_err], 
-                color=colors[i], capsize=5, alpha=0.8, edgecolor='white')
-
-    ax3.set_title("Calibration Error (Lower is Better)", fontsize=15, fontweight='bold')
-    ax3.set_xticks(x_err)
-    ax3.set_xticklabels(['Brier Score', 'Log-Loss'], fontsize=12)
-    ax3.set_ylabel("Error Value")
-    apply_manual_zoom(ax3, points_for_zoom3)
-
-    # --- Global Legend and Layout ---
-    plt.suptitle(title, fontsize=22, y=1.02)
-    
-    # Legend at bottom with multiple rows if needed
-    fig.legend(handles, legend_labels, loc='lower center', ncol=3, 
-               bbox_to_anchor=(0.5, -0.05), fontsize=11, frameon=True)
-
-    plt.tight_layout(rect=[0, 0.02, 1, 0.98])
-    plt.show()
-
-def plot_comprehensive_results3(all_results, labels, title="Model Evaluation"):
-    sns.set_context("paper")
-    sns.set_style("whitegrid")
-    
-    fig, axes = plt.subplots(3, 1, figsize=(14, 20)) 
-    colors = plt.cm.viridis(np.linspace(0, 0.8, len(all_results)))
-    width = 0.8 / len(all_results)
-    
-    handles, legend_labels = [], []
-
-    # --- HELPER: Manual Zoom Function ---
-    def apply_manual_zoom(ax, data_points, padding=0.15):
-        """Forces the Y-axis to zoom in on the data range."""
-        if not data_points: return
-        d_min, d_max = min(data_points), max(data_points)
-        diff = d_max - d_min
-        if diff == 0:
-            ax.set_ylim(max(0, d_min - 0.05), min(1.0, d_min + 0.05))
-        else:
-            # Set boundaries gracefully, ensuring we don't zoom out past logical limits (like 0)
-            ax.set_ylim(max(0, d_min - (diff * padding)), min(d_max + (diff * padding), d_max * 1.5))
-
-    # --- Subplot 1: Global Metrics ---
-    ax1 = axes[0]
-    global_keys = ['Macro-AUC', 'cmAP']
-    x_global = np.arange(len(global_keys))
-    points_for_zoom1 = []
-
-    for i, (model_name, stats) in enumerate(all_results.items()):
-        # Extract values using standard string keys instead of positional integers
-        means = [stats[k]['mean'] for k in global_keys]
-        stds = [stats[k]['std'] for k in global_keys]
-        
-        # Track data bounds for the visual zoom
-        for m, s in zip(means, stds):
-            points_for_zoom1.extend([m - s, m + s])
-        
-        offset = i * width - (width * len(all_results)) / 2 + width / 2
-        bar = ax1.bar(x_global + offset, means, width, yerr=stds, 
-                      color=colors[i], capsize=5, alpha=0.8, edgecolor='white')
-        
-        if model_name not in legend_labels:
-            handles.append(bar)
-            legend_labels.append(model_name)
-
-    ax1.set_title("Global Performance: Macro-AUC vs cmAP", fontsize=15, fontweight='bold')
-    ax1.set_xticks(x_global)
-    ax1.set_xticklabels(['Macro-AUC', 'cmAP (mAP)'], fontsize=12)
-    ax1.set_ylabel("Score")
-    apply_manual_zoom(ax1, points_for_zoom1)
-
-    # --- Subplot 2: Per-Class Average Precision ---
-    ax2 = axes[1]
-    x_labels = np.arange(len(labels))
-    points_for_zoom2 = []
-    
-    for i, (model_name, stats) in enumerate(all_results.items()):
-        ap_data = stats['AP per label']
-        
-        # Pull out mean and std for each specific target class label
-        means = [ap_data[l]['mean'] for l in labels]
-        stds = [ap_data[l]['std'] for l in labels]
-        
-        for m, s in zip(means, stds):
-            points_for_zoom2.extend([m - s, m + s])
-        
-        offset = i * width - (width * len(all_results)) / 2 + width / 2
-        ax2.bar(x_labels + offset, means, width, yerr=stds, 
-                color=colors[i], capsize=4, alpha=0.8, edgecolor='white')
-
-    ax2.set_title("Per-Class Average Precision", fontsize=15, fontweight='bold')
-    ax2.set_xticks(x_labels)
-    ax2.set_xticklabels(labels, rotation=35, ha='right', fontsize=11)
-    ax2.set_ylabel("AP Score")
-    apply_manual_zoom(ax2, points_for_zoom2)
-
-    # --- Subplot 3: Error Metrics ---
-    ax3 = axes[2]
-    # Fixed keys to perfectly match the exact strings inside your dataset
-    error_metrics = ['Brier (macro)', 'Log-Loss (macro)']
-    x_err = np.arange(len(error_metrics))
-    points_for_zoom3 = []
-    
-    for i, (model_name, stats) in enumerate(all_results.items()):
-        means = [stats[m]['mean'] for m in error_metrics]
-        stds = [stats[m]['std'] for m in error_metrics]
-        
-        for m, s in zip(means, stds):
-            points_for_zoom3.extend([m - s, m + s])
-        
-        offset = i * width - (width * len(all_results)) / 2 + width / 2
-        ax3.bar(x_err + offset, means, width, yerr=stds, 
-                color=colors[i], capsize=5, alpha=0.8, edgecolor='white')
-
-    ax3.set_title("Calibration Error (Lower is Better)", fontsize=15, fontweight='bold')
-    ax3.set_xticks(x_err)
-    ax3.set_xticklabels(['Brier Score', 'Log-Loss'], fontsize=12)
-    ax3.set_ylabel("Error Value")
-    apply_manual_zoom(ax3, points_for_zoom3)
-
-    # --- Global Legend and Layout Adjustments ---
-    plt.suptitle(title, fontsize=22, y=1.01, fontweight='bold')
-    
-    fig.legend(handles, legend_labels, loc='lower center', ncol=3, 
-               bbox_to_anchor=(0.5, -0.02), fontsize=12, frameon=True)
-
-    plt.tight_layout(rect=[0, 0.02, 1, 0.98])
-    plt.show()
-
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-from sklearn.metrics import average_precision_score
 
 def plot_comprehensive_boxplots(all_encoders_results, label_names=None):
     """
-    Plots a 2x3 grid of subplots for a research paper report layout:
+    Plots a 2x3 grid of subplots with layout:
     Row 1: Type A, Type B, Type C
     Row 2: Type D, Echo, cmAP
-    
-    Features:
-    - Global title and figure title removed (handled by external paper caption text).
-    - Multi-line labels centered cleanly under the columns to completely avoid clipping.
-    - Global legend placed safely underneath the grid.
+    Each subplot shows boxplots of the specified metric across different models and encoders, with a unified chance level indicated.
+    Withstatistics over all folds and trials for each model.
+    all_encoders_results : of format {encoder_name: [trial_dicts...]} where trial_dicts contain 'model', 'y_true_cv', 'y_pred_proba_cv' for each fold.
+    label_names : list of class names corresponding to the columns in y_true and y_pred_proba.
     """
     if label_names is None:
         label_names = ['Type A', 'Type B', 'Type C', 'Type D', 'Echo']
@@ -801,6 +413,8 @@ def plot_comprehensive_boxplots(all_encoders_results, label_names=None):
 def plot_comprehensive_boxplots_no_echo(all_encoders_results, label_names=None):
     """
     Plots a 2x3 grid (now only 5 active subplots) excluding Echolocation.
+    all_encoders_results : of format {encoder_name: [trial_dicts...]} where trial_dicts contain 'model', 'y_true_cv', 'y_pred_proba_cv' for each fold.
+    label_names : list of class names corresponding to the columns in y_true and y_pred_proba.
     """
     # 1. Ensure Echo is removed from the processed labels
     if label_names is None:
@@ -911,116 +525,6 @@ def plot_comprehensive_boxplots_no_echo(all_encoders_results, label_names=None):
     plt.tight_layout(rect=[0, 0.12, 1, 0.95])
     plt.show()
 
-def plot_mlp_balancing_boxplots(mlp_results, label_names=None):
-    """
-    Plots a 2x3 grid of subplots for a research paper report layout:
-    Row 1: Type A, Type B, Type C
-    Row 2: Type D, Echo, cmAP
-    
-    This matches the publication aesthetic of your encoder choice plot, 
-    adapted for evaluating different class-balancing variants of the MLP.
-    """
-    if label_names is None:
-        label_names = ['Type A', 'Type B', 'Type C', 'Type D', 'Echo']
-        
-    # --- Step 1: Parse Raw Fold Arrays into a Structured DataFrame ---
-    rows = []
-    
-    # Extract entries directly out of your balancing_mlp_val output list
-    for trial_entry in mlp_results:
-        model_name = trial_entry['model']      # e.g., 'MLP_FocalLoss'
-        y_true_folds = trial_entry['y_true_cv']          
-        y_pred_proba_folds = trial_entry['y_pred_proba_cv']  
-        
-        # Clean up strings for display on the X-axis
-        clean_model_name = model_name.replace('MLP_', '')
-        if clean_model_name == 'ClassWeights':
-            clean_model_name = 'Class Weights'
-        elif clean_model_name == 'FocalLoss':
-            clean_model_name = 'Focal Loss'
-            
-        for fold_idx in range(len(y_true_folds)):
-            y_true = y_true_folds[fold_idx]
-            y_pred_proba = y_pred_proba_folds[fold_idx]
-            
-            # Compute macro-averaged metric across this active validation partition
-            fold_cmap = average_precision_score(y_true, y_pred_proba, average='macro')
-            
-            # Extract individual acoustic call-type dimensions
-            row = {
-                'Strategy': clean_model_name,
-                'cmAP': fold_cmap
-            }
-            for idx, name in enumerate(label_names):
-                row[f'AP_{name}'] = average_precision_score(y_true[:, idx], y_pred_proba[:, idx])
-                
-            rows.append(row)
-                    
-    df = pd.DataFrame(rows)
-    
-    strategy_order = ['Baseline', 'Class Weights', 'Focal Loss', 'Oversampled']
-    df = df[df['Strategy'].isin(strategy_order)]
-    
-    # --- Step 2: Establish Layout Structure (2 Rows x 3 Columns) ---
-    sns.set_context("paper", font_scale=1.1)
-    sns.set_style("whitegrid", {"grid.linestyle": "--", "grid.alpha": 0.5})
-    
-    # Replicating the clean, high-contrast palette from your reference images
-    # 4 distinct colors matching your balancing configurations
-    custom_palette = ['#8BBCE6', '#9EE4A5', '#F8B5C5', '#FAD390']
-    strategy_colors = {strategy_order[i]: custom_palette[i] for i in range(len(strategy_order))}
-    
-    row1_targets = [(f'AP_{label_names[0]}', label_names[0]), 
-                    (f'AP_{label_names[1]}', label_names[1]), 
-                    (f'AP_{label_names[2]}', label_names[2])]
-    
-    row2_targets = [(f'AP_{label_names[3]}', label_names[3]), 
-                    (f'AP_{label_names[4]}', label_names[4]), 
-                    ('cmAP', r'$cmAP$')]
-    
-    grid_targets = [row1_targets, row2_targets]
-    
-    fig, axes = plt.subplots(2, 3, figsize=(14, 8.5), sharey=False)
-
-    # --- Step 3: Run Visualization Iteration Loop ---
-    for r_idx in range(2):
-        for c_idx in range(3):
-            ax = axes[r_idx, c_idx]
-            col_name, display_title = grid_targets[r_idx][c_idx]
-            
-            # Render clean, aligned boxplots
-            sns.boxplot(
-                data=df, x='Strategy', y=col_name, hue='Strategy',
-                order=strategy_order, palette=strategy_colors,
-                ax=ax, width=0.55, showfliers=True, legend=False,
-                flierprops=dict(marker='o', markerfacecolor='gray', markersize=4, markeredgecolor='none', alpha=0.6),
-                boxprops=dict(edgecolor='#4d4d4d', linewidth=1.2),
-                whiskerprops=dict(color='#4d4d4d', linewidth=1.1),
-                capprops=dict(color='#4d4d4d', linewidth=1.1),
-                medianprops=dict(color='#2c3e50', linewidth=1.5)
-            )
-            
-            # --- Step 4: Refine Aesthetics, Limits, and Label Padding ---
-            ax.set_title(display_title, fontsize=12, fontweight='bold', pad=12)
-            ax.set_xlabel("", fontsize=10)
-            ax.set_ylabel("Average Precision (AP)" if c_idx == 0 else "", fontsize=11)
-            
-            # Center and balance multi-line x-axis category markers 
-            display_labels = ["Baseline\n(BCE)", "Class\nWeights", "Focal\nLoss", "Iterative\nOversample"]
-            ax.set_xticklabels(display_labels, rotation=0, ha='center', fontsize=9.5)
-            
-            # Auto-scale limits based tightly on data variance thresholds
-            current_data = df[col_name].dropna()
-            if not current_data.empty:
-                ymin, ymax = current_data.min(), current_data.max()
-                yrange = ymax - ymin if ymax != ymin else 0.1
-                ax.set_ylim(max(0, ymin - 0.08 * yrange), min(1.02, ymax + 0.08 * yrange))
-                
-    # Balanced layout adjustments to give breathing room for text labels
-    plt.tight_layout()
-    plt.subplots_adjust(hspace=0.42, wspace=0.22, bottom=0.1)
-    plt.show()
-
 def plot_comprehensive_mlp_boxplots(balancing_results, augmented_results, label_names=None):
     """
     Plots a 2x3 grid of subplots evaluating 5 MLP strategies for a research paper:
@@ -1028,6 +532,9 @@ def plot_comprehensive_mlp_boxplots(balancing_results, augmented_results, label_
     Row 2: Type D, Echo, cmAP
     
     Accepts the balancing results list and the data-augmented results list separately.
+    balancing_results = list of dicts for MLP balancing strategies (e.g., Baseline, Class Weights, Focal Loss, Oversampled)
+    with format: [{'model': 'MLP_FocalLoss', 'y_true_cv': [...], 'y_pred_proba_cv': [...]}, ...]
+    augmented_results =  dict for the Data Augmentation strategy (with same structure as balancing_results entries)
     """
     if label_names is None:
         label_names = ['Type A', 'Type B', 'Type C', 'Type D', 'Echo']
@@ -1146,6 +653,8 @@ def plot_abmil_vs_perch_boxplots(abmil_results, per2_results, label_names=None):
     Plots a 2x3 grid of boxplots comparing Tuned ABMIL vs Perch 2.0 + Logistic Regression.
     Row 1: Type A, Type B, Type C AP
     Row 2: Type D, Echo, and overall cmAP
+    abmil_results: List of dictionaries containing 'y_true_cv' and 'y_pred_proba_cv' for ABMIL trials.
+    per2_results: List of dictionaries containing 'model', 'y_true_cv', and 'y_pred_proba_cv' for Perch 2.0 trials.
     """
     if label_names is None:
         label_names = ['Type A', 'Type B', 'Type C', 'Type D', 'Echo']
@@ -1239,95 +748,6 @@ def plot_abmil_vs_perch_boxplots(abmil_results, per2_results, label_names=None):
                 
     plt.tight_layout()
     plt.subplots_adjust(hspace=0.35, wspace=0.22, bottom=0.1)
-    plt.show()
-
-"""Implementation
-# 1. Collect your stats into a dictionary
-labels = ['Type A', 'Type B', 'Type C', 'Type D', 'Echo']
-results_vault = {
-    "Perch 2.0 SVM": compute_cv_stats(y_true_perch_svm, y_prob_perch_svm, label_names=labels),
-    "Perch 2.0 RF": compute_cv_stats(y_true_perch_rf, y_prob_perch_rf, label_names=labels),
-    "Perch 2.0 MLP": compute_cv_stats(y_true_perch_mlp, y_prob_perch_mlp, label_names=labels),
-    "NLM BEATs": compute_cv_stats(y_true_beats, y_prob_beats, label_names=labels),
-    "EffNet B0": compute_cv_stats(y_true_eff, y_prob_eff, label_names=labels)
-    }
-
-# 2. Call the plot
-plot_model_comparison(
-    all_results=results_vault, 
-    metrics_to_plot=['Macro-AUC', 'cmAP'], # Choose which metrics to show
-    title="Pipistrelle Classification: Encoder Comparison"
-)
-"""
-
-def plot_calibration_curves(y_true,y_pred_proba,label_names=None,n_bins=10,strategy="quantile"):
-    """
-    Plot calibration curves + probability histograms
-    for multilabel classification.
-
-    Parameters
-    ----------
-    y_true : ndarray of shape (n_samples, n_labels)
-        Binary ground-truth matrix.
-
-    y_pred_proba : ndarray of shape (n_samples, n_labels)
-        Predicted probabilities.
-
-    label_names : list[str], optional
-        Names of labels.
-
-    n_bins : int
-        Number of calibration bins.
-
-    strategy : {"uniform", "quantile"}
-        Binning strategy for calibration_curve.
-    """
-    n_labels = y_true.shape[1]
-
-    if label_names is None:
-        label_names = [f"Label {i}" for i in range(n_labels)]
-
-    # 2 rows: top calibration curves, bottom histograms
-    fig, axes = plt.subplots(2,n_labels,figsize=(5 * n_labels, 8))
-
-    # handle case n_labels == 1
-    if n_labels == 1:
-        axes = np.array([[axes[0]], [axes[1]]])
-
-    for i in range(n_labels):
-        # Skip degenerate labels
-        if len(np.unique(y_true[:, i])) < 2:
-            axes[0, i].set_visible(False)
-            axes[1, i].set_visible(False)
-            continue
-        
-        brier = brier_score_loss(y_true[:, i],y_pred_proba[:, i])
-        # ---Calibration curve---------------
-        prob_true, prob_pred = calibration_curve(y_true[:, i],y_pred_proba[:, i],n_bins=n_bins,strategy=strategy)
-
-        ax_curve = axes[0, i]
-        ax_curve.plot(prob_pred,prob_true,marker='o',linewidth=2)
-        # perfect calibration
-        ax_curve.plot([0, 1],[0, 1],linestyle='--',color='gray')
-
-        ax_curve.set_title(f"{label_names[i]}\nBrier={brier:.3f}")
-        ax_curve.set_xlabel("Mean predicted probability")
-        ax_curve.set_ylabel("Fraction of positives")
-        ax_curve.set_xlim(0, 1)
-        ax_curve.set_ylim(0, 1)
-        ax_curve.grid(True)
-
-        # ---Histogram-----------------------
-        ax_hist = axes[1, i]
-        ax_hist.hist(y_pred_proba[:, i],bins=n_bins,alpha=0.7)
-
-        ax_hist.set_title(f"{label_names[i]} Probability Distribution")
-        ax_hist.set_xlabel("Predicted probability")
-        ax_hist.set_ylabel("Count")
-        ax_hist.set_xlim(0, 1)
-        ax_hist.grid(True)
-
-    plt.tight_layout()
     plt.show()
 
 def plot_comprehensive_calibration(encoder_results, label_names, n_bins=10, strategy="uniform"):
@@ -1452,8 +872,10 @@ from sklearn.calibration import calibration_curve
 
 def plot_comprehensive_calibration2(linear_results, abmil_results, label_names, n_bins=10, strategy="uniform"):
     """
-    Plots a multi-model calibration comparison grid.
+    Plots a multi-model calibration comparison grid of the a certains encoder linear results and abmil results.
     Columns track individual targets; top row renders curves, bottom row shows distribution density.
+    linear_results = list of dicts with 'model', 'oof_y_true', 'oof_y_pred_proba' for linear models
+    abmil_results = list of dicts with 'model', 'oof_y_true', 'oof_y_pred_proba' for ABMIL models
     """
     sns.set_context("paper")
     sns.set_style("whitegrid")
@@ -1601,6 +1023,12 @@ def plot_loss_curves(all_results):
     """
     Plots the training and validation loss pathways side-by-side across configurations
     to visually demonstrate overfitting trends.
+    all_results : list of dicts, each containing:
+    {
+        'model': str,  # e.g., 'MLP_FocalLoss'
+        'train_histories': list of lists (each inner list is the train loss per epoch for a fold),
+        'val_histories': list of lists (each inner list is the val loss per epoch for a fold)
+    }
     """
     unique_models = list(set([res['model'] for res in all_results]))
     
@@ -1651,7 +1079,3 @@ def plot_loss_curves(all_results):
         
     plt.tight_layout()
     plt.show()
-
-# Run the function on your output:
-# histories = balancing_mlp(X, y)
-# plot_loss_curves(histories)

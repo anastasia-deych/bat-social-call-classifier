@@ -1,15 +1,18 @@
 import numpy as np
 import torch
 from tqdm import tqdm
-
-#effnet and beats import
 from avex import load_model
-#perch 2.0 import
 import tensorflow as tf
 import tensorflow_hub as hub
 
 
 def extract_feature(window, encoder, model_name, device='cpu'):
+    """
+    Extracts features from a given window using the specified encoder model.
+    - window: The input audio window (numpy array or torch tensor).
+    - encoder: The loaded encoder model (PyTorch or TensorFlow).
+    - model_name: The name of the model to use either 'effnetb0', 'NLM_BEATs', or 'perch2'.
+    - device: The device to run the model on."""
     # Convert Torch tensor to NumPy for cross-framework compatibility
     if isinstance(window, torch.Tensor):
         window_np = window.cpu().numpy()
@@ -37,6 +40,7 @@ def extract_feature(window, encoder, model_name, device='cpu'):
             return feats.cpu() # Return to CPU to avoid filling GPU RAM
 
 def build_feature_bank(batdata, encoder, model_name, device='cpu'):
+    """Builds a feature bank of all recordings by extracting features for each window in the dataset using the specified encoder."""
     feature_list = []
     label_list = []
     print(f"Dataset type: {type(batdata)}")
@@ -56,6 +60,10 @@ def build_feature_bank(batdata, encoder, model_name, device='cpu'):
 
 
 def extract_encoder(model_name, device='cpu'):
+    """
+    Loads the specified encoder model and returns it ready for feature extraction.
+    model_name should be one of 'effnetb0', 'NLM_BEATs', or 'perch2'.
+    """
     if model_name in ['effnetb0', 'NLM_BEATs']:
         # PyTorch logic
         model_key = "esp_aves2_effnetb0_all" if model_name == 'effnetb0' else "esp_aves2_naturelm_audio_v1_beats"
@@ -72,7 +80,13 @@ def extract_encoder(model_name, device='cpu'):
     
 
 def pool_features(features, windows : bool = False,window_pooled : bool = False, method : str ='mean',encoder : str = 'perch2'):
-
+    """
+    Applies pooling to the extracted features based on the specified method and encoder type.
+        - If 'windows' is True, it applies pooling across the window dimension for each recording.
+        - If 'window_pooled' is True, it applied patch pooling taking into account the fact that windows have been pooled.
+        - The 'method' parameter determines whether to use mean or max pooling.
+        - The 'encoder' parameter specifies the encoder type to determine the correct axes for pooling.
+    """
     if windows :
         if method == 'mean':
             pooled_list = [np.mean(f, axis=0) for f in features]
